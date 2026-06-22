@@ -8,6 +8,7 @@ interface ZohoEmailItem {
   subject: string;
   receivedTime: string | number;
   folderName?: string;
+  folderId?: string;
 }
 
 export async function GET() {
@@ -196,6 +197,7 @@ export async function GET() {
 
       return {
         messageId: item.messageId || "unknown",
+        folderId: item.folderId || "unknown",
         from: item.sender || item.fromAddress || "unknown",
         subject: item.subject || "(No Subject)",
         receivedAt,
