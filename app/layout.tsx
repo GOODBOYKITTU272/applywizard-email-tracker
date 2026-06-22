@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "ApplyWizard Email Tracker",
-  description: "Track and classify client emails.",
+  description:
+    "A Vercel-ready app that connects to Zoho Mail, classifies client emails with AI, and stores results in Supabase.",
 };
 
 export default function RootLayout({
