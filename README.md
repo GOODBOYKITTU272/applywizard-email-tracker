@@ -123,6 +123,37 @@ npm run build     # Builds the production version (confirms everything compiles)
 
 ---
 
+## Security rules
+
+These rules apply to every phase of this project, now and in the future.
+
+### 🔒 Token logging rule
+
+Full `access_token` and `refresh_token` values must **never** be logged anywhere:
+
+- ❌ Not to the Terminal / server console
+- ❌ Not to Vercel logs
+- ❌ Not to a file
+- ❌ Not to a response body the browser can read
+
+When the Zoho OAuth handshake completes, the only thing that may be logged is:
+
+```
+[Zoho OAuth] access_token_received: true
+[Zoho OAuth] refresh_token_received: true
+[Zoho OAuth] expires_in: 3600
+```
+
+If a token is missing or the exchange failed, `true` becomes `false` — nothing else is shown. This confirms the handshake worked without ever writing a real credential anywhere.
+
+### 🔒 Secret key rule
+
+- All secret keys (`ZOHO_CLIENT_SECRET`, `OPENAI_API_KEY`, etc.) live only in `.env.local` and Vercel's Environment Variables panel.
+- `.env.example` contains placeholder names only — never real values.
+- `.env.local` is listed in `.gitignore` and is never committed to Git.
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |
