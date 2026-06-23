@@ -51,6 +51,43 @@ export interface ClassifyResult {
   skipped: number;
 }
 
+export interface DryRunEntry {
+  message_id: string;
+  sender_domain: string;    // domain portion only — never full email address
+  subject: string;          // truncated to 80 characters
+  category: string;
+  confidence: number;
+  priority: string | null;
+  needs_human_review: boolean;
+  classifier_source: "deterministic" | "regex" | "ai";
+  deadline: string | null;
+}
+
+export interface DryRunResult {
+  dry_run: true;
+  mailbox: string;
+  checked: number;
+  entries: DryRunEntry[];
+}
+
+export interface ClassifyOptions {
+  /** Dry-run: classify but never write results to Supabase. Requires mailbox. */
+  dryRun?: boolean;
+  /**
+   * Explicit mailbox email address for controlled single-mailbox test runs.
+   * Required when dryRun is true. Must be a single address (no commas/semicolons).
+   * Maximum batch: 10 emails.
+   */
+  mailbox?: string;
+}
+
+const MAX_DRY_RUN_BATCH = 10;
+
+function senderDomain(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at >= 0 ? email.slice(at + 1).toLowerCase() : "unknown";
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function stripHtml(html: string): string {
@@ -138,18 +175,192 @@ async function refreshZohoToken(
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
+// ── Dry-run implementation ─────────────────────────────────────────────────
+
+async function runDryRun(cfg: {
+  mailbox: string;
+  clientId: string;
+  clientSecret: string;
+  accountsBaseUrl: string;
+  mailBaseUrl: string;
+}): Promise<DryRunResult> {
+  const supabase = createSupabaseServerClient();
+
+  const { data: connection, error: connError } = await supabase
+    .from("zoho_connections")
+    .select("*")
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (connError) {
+    throw new Error(`Failed to query zoho_connections: ${connError.message}`);
+  }
+  if (!connection) {
+    throw new Error("No active Zoho connection found. Please log in first.");
+  }
+
+  let accessToken: string = connection.access_token;
+  const expiresAt = new Date(connection.access_token_expires_at).getTime();
+  if (expiresAt < Date.now() + 5 * 60 * 1000) {
+    accessToken = await refreshZohoToken(
+      connection as Record<string, string>,
+      cfg.clientId,
+      cfg.clientSecret,
+      cfg.accountsBaseUrl,
+    );
+  }
+
+  const { data: pendingEmails, error: pendingError } = await supabase
+    .from("zoho_email_metadata")
+    .select("*")
+    .eq("mailbox_email", cfg.mailbox)
+    .in("classification_status", ["pending", "failed"])
+    .order("received_at", { ascending: false })
+    .limit(MAX_DRY_RUN_BATCH);
+
+  if (pendingError) {
+    throw new Error(`Failed to query pending emails: ${pendingError.message}`);
+  }
+
+  const rows = pendingEmails ?? [];
+  if (rows.length > MAX_DRY_RUN_BATCH) {
+    throw new Error(
+      `Dry-run batch exceeds maximum of ${MAX_DRY_RUN_BATCH} emails.`,
+    );
+  }
+
+  const zohoAccountId: string = connection.zoho_account_id;
+  const entries: DryRunEntry[] = [];
+
+  for (const emailRecord of rows) {
+    const messageId: string = emailRecord.message_id;
+    const folderId: string = emailRecord.folder_id;
+
+    try {
+      const detailsUrl = `${cfg.mailBaseUrl}/accounts/${zohoAccountId}/folders/${folderId}/messages/${messageId}/details`;
+      const contentUrl = `${cfg.mailBaseUrl}/accounts/${zohoAccountId}/folders/${folderId}/messages/${messageId}/content`;
+
+      const [detailsRes, contentRes] = await Promise.all([
+        fetch(detailsUrl, { headers: { Accept: "application/json", Authorization: `Zoho-oauthtoken ${accessToken}` } }),
+        fetch(contentUrl, { headers: { Accept: "application/json", Authorization: `Zoho-oauthtoken ${accessToken}` } }),
+      ]);
+
+      if (!detailsRes.ok || !contentRes.ok) {
+        console.error(`[Zoho DryRun] Failed to fetch email from Zoho. Details: ${detailsRes.status}, Content: ${contentRes.status}`);
+        continue;
+      }
+
+      const [detailsPayload, contentPayload] = (await Promise.all([
+        detailsRes.json(),
+        contentRes.json(),
+      ])) as [ZohoAPIResponse<ZohoDetailsData>, ZohoAPIResponse<ZohoContentData>];
+
+      if (detailsPayload.status?.code !== 200 || contentPayload.status?.code !== 200) {
+        console.error("[Zoho DryRun] Zoho API non-success code:", detailsPayload.status, contentPayload.status);
+        continue;
+      }
+
+      const details = detailsPayload.data;
+      const contentData = contentPayload.data;
+      if (!details || !contentData) continue;
+
+      const subject = details.subject || "(No Subject)";
+      // bodyText is used for classification only — never stored or logged
+      const bodyText = stripHtml(contentData.content || "");
+      const sender: string = emailRecord.sender ?? details.sender ?? "";
+      const receivedDate: string = emailRecord.received_at ?? "";
+
+      let classifier_source: "deterministic" | "regex" | "ai";
+      const deterministicResult = classifyEmail({ subject, body: bodyText, sender, receivedDate });
+      let classification;
+
+      if (deterministicResult.category !== "unknown" && deterministicResult.confidence >= DETERMINISTIC_CONFIDENCE_THRESHOLD) {
+        classification = deterministicResult;
+        classifier_source = "deterministic";
+      } else {
+        const regexResult = tryRegexExtract({ subject, body: bodyText });
+        if (regexResult) {
+          classification = regexResult;
+          classifier_source = "regex";
+        } else {
+          classification = await classifyWithAI({ subject, body: bodyText });
+          classifier_source = "ai";
+        }
+      }
+
+      // ponytail: no Supabase write in dry-run — classification result discarded after summary
+      entries.push({
+        message_id: messageId,
+        sender_domain: senderDomain(sender),
+        subject: subject.slice(0, 80),
+        category: classification.category,
+        confidence: classification.confidence,
+        priority: (classification as { priority?: string }).priority ?? null,
+        needs_human_review: classification.needs_human_review,
+        classifier_source,
+        deadline: isValidISODate(classification.deadline) ? classification.deadline : null,
+      });
+    } catch (error) {
+      console.error(
+        `[Zoho DryRun] Error classifying message ${messageId}:`,
+        error instanceof Error ? error.message : "Unknown error",
+      );
+    }
+  }
+
+  console.log(`[Zoho DryRun] Complete — mailbox: ${senderDomain(cfg.mailbox)}, checked: ${rows.length}, classified: ${entries.length}`);
+
+  return { dry_run: true, mailbox: cfg.mailbox, checked: rows.length, entries };
+}
+
+export async function classifyEmails(): Promise<ClassifyResult>;
+export async function classifyEmails(options: { dryRun: true; mailbox?: string }): Promise<DryRunResult>;
+export async function classifyEmails(options?: ClassifyOptions): Promise<ClassifyResult | DryRunResult>;
 /**
- * Classifies up to 5 pending or failed email records.
- * Skips already-classified rows automatically (DB query filter).
+ * Classifies up to 5 pending or failed email records (live path), or
+ * performs a dry-run classification for a single approved mailbox without
+ * writing any results to Supabase.
  *
- * Throws on configuration or connection errors so the caller can surface
- * an appropriate HTTP response.
+ * Throws on configuration, connection, or guardrail errors so the caller
+ * can surface an appropriate HTTP response.
  */
-export async function classifyEmails(): Promise<ClassifyResult> {
+export async function classifyEmails(
+  options?: ClassifyOptions,
+): Promise<ClassifyResult | DryRunResult> {
   const clientId = process.env.ZOHO_CLIENT_ID;
   const clientSecret = process.env.ZOHO_CLIENT_SECRET;
   const accountsBaseUrl = process.env.ZOHO_ACCOUNTS_BASE_URL;
   const mailBaseUrl = process.env.ZOHO_MAIL_BASE_URL;
+
+  // ── Dry-run guardrails (checked before env-vars to give clear error messages)
+  if (options?.dryRun) {
+    const { mailbox } = options;
+
+    if (!mailbox || mailbox.trim() === "") {
+      throw new Error(
+        "Dry-run requires an explicit mailbox address. No mailbox provided.",
+      );
+    }
+    if (/[,;]/.test(mailbox) || mailbox.trim().includes(" ")) {
+      throw new Error(
+        "Dry-run permits only one mailbox per run. Multiple addresses are not allowed.",
+      );
+    }
+
+    if (!clientId || !clientSecret || !accountsBaseUrl || !mailBaseUrl) {
+      throw new Error("Zoho API configuration is incomplete on the server.");
+    }
+
+    return runDryRun({
+      mailbox: mailbox.trim(),
+      clientId,
+      clientSecret,
+      accountsBaseUrl,
+      mailBaseUrl,
+    });
+  }
 
   if (!clientId || !clientSecret || !accountsBaseUrl || !mailBaseUrl) {
     throw new Error("Zoho API configuration is incomplete on the server.");
