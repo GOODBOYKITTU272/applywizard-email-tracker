@@ -127,15 +127,22 @@ export async function syncEmails(): Promise<SyncResult> {
     throw new Error("Zoho API configuration is incomplete on the server.");
   }
 
+  const syncMailbox = process.env.ZOHO_SYNC_MAILBOX?.toLowerCase().trim();
+  if (!syncMailbox) {
+    throw new Error(
+      "ZOHO_SYNC_MAILBOX is not configured. Set it to the exact tracker mailbox address.",
+    );
+  }
+
   const supabase = createSupabaseServerClient();
 
-  // Fetch the active Zoho connection
+  // Fetch the active Zoho connection for the configured tracker mailbox only.
+  // Explicit email_address filter prevents silent fallback to any other mailbox.
   const { data: connection, error: connError } = await supabase
     .from("zoho_connections")
     .select("*")
     .eq("status", "active")
-    .order("created_at", { ascending: false })
-    .limit(1)
+    .eq("email_address", syncMailbox)
     .maybeSingle();
 
   if (connError) {
@@ -143,7 +150,9 @@ export async function syncEmails(): Promise<SyncResult> {
   }
 
   if (!connection) {
-    throw new Error("No active Zoho connection found. Please log in first.");
+    throw new Error(
+      `No active Zoho connection found for configured sync mailbox. Connect it via /api/zoho/login first.`,
+    );
   }
 
   // Refresh token if expired or near expiry
