@@ -1,16 +1,19 @@
-# ApplyWizard Email Tracker — Phase 5B.1 Checkpoint
+# ApplyWizard Email Tracker — Phase 6A Checkpoint
 
-This document serves as the final checkpoint for Phase 5B.1 of the **ApplyWizard Email Tracker** project.
+This document serves as the final checkpoint for Phase 6A of the **ApplyWizard Email Tracker** project.
 
 ---
 
 ## 1. Current Phase Completed
 
-### Phase 5B.1: Retry Failed Classifications
-- **Failed Status Retryable:** Modified the database query in `POST /api/zoho/emails/classify/test` to retrieve records with `classification_status` in `['pending', 'failed']` instead of strictly `pending`. This enables failed rows to be safely retried.
-- **Graceful Error Handling:** If a record fails to classify again (e.g. due to OpenAI key or network failures), it safely remains in `failed` status and can be retried in subsequent sync executions.
-- **Batched Execution:** Processes a small batch of up to 5 pending or failed records per invocation, skipping already `classified` rows.
-- **Security Check Compliance:** Email body text, HTML content, attachments, and secrets are discarded immediately post-classification and are never stored or logged.
+### Phase 6A: Manual Sync + Classification Orchestrator
+
+- **Shared Library Modules:** Extracted all business logic out of the two test routes into:
+  - `lib/zoho/syncEmails.ts` — reusable `syncEmails()` function (Phase 5A logic)
+  - `lib/zoho/classifyEmails.ts` — reusable `classifyEmails()` function (Phase 5B/5B.1 logic)
+- **Thin Wrappers:** Refactored `app/api/zoho/emails/sync/test/route.ts` and `app/api/zoho/emails/classify/test/route.ts` to call the lib functions; identical response shapes, zero logic duplication.
+- **Orchestrator Route:** Created `POST /api/zoho/workflow/test` which runs sync then classify in sequence and returns a single combined summary.
+- **Strict Boundaries:** No cron, no daemon, no scheduler, no dashboard, no email body storage, no secrets in logs or responses.
 
 ---
 
@@ -18,20 +21,30 @@ This document serves as the final checkpoint for Phase 5B.1 of the **ApplyWizard
 
 Below are the recent commits on the current branch (`main`):
 
+- **`1fd9970`** Phase 6A: extract sync/classify logic into lib/zoho and add POST /api/zoho/workflow/test orchestrator
+- **`15d2b44`** docs: create Phase 5B.1 final checkpoint
 - **`0d1c445`** Phase 5B.1: enable retry for failed classifications by querying both pending and failed status values
 - **`00ab960`** Phase 5B: implement metadata classification migration and POST /api/zoho/emails/classify/test route
-- **`f81de73`** docs: create Phase 5A final checkpoint
 - **`cf4fc0d`** Phase 5A: implement zoho_email_metadata schema and POST /api/zoho/emails/sync/test route
-- **`230175d`** docs: create Phase 4C final checkpoint
 
 ---
 
-## 3. Environment Variables Required
+## 3. API Routes
 
-The following environment variables are specified in `.env.example` and are required for full system operation:
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/zoho/login` | GET | Start Zoho OAuth flow |
+| `/api/zoho/callback` | GET | Handle Zoho OAuth callback |
+| `/api/zoho/emails/sync/test` | POST | Sync latest email metadata from Zoho |
+| `/api/zoho/emails/classify/test` | POST | Classify pending/failed records |
+| `/api/zoho/workflow/test` | POST | **Phase 6A** — Orchestrate sync + classify in one call |
+
+---
+
+## 4. Environment Variables Required
 
 ```ini
-# -- Zoho OAuth (Phase 2, 4A, 4B, 4C, 5A, 5B & 5B.1) --
+# -- Zoho OAuth --
 ZOHO_CLIENT_ID=YOUR_CLIENT_ID_HERE
 ZOHO_CLIENT_SECRET=YOUR_CLIENT_SECRET_HERE
 ZOHO_REDIRECT_URI=https://applywizard.ai/api/zoho/callback
@@ -39,26 +52,26 @@ ZOHO_ACCOUNTS_BASE_URL=https://accounts.zoho.in
 ZOHO_MAIL_BASE_URL=https://mail.zoho.in/api
 ZOHO_ADMIN_EMAIL=ramakrishn@applywizard.ai
 
-# -- AI Classification (Phase 3, 5B & 5B.1) --
+# -- AI Classification --
 OPENAI_API_KEY=YOUR_OPENAI_API_KEY_HERE
-DEEPSEEK_API_KEY=YOUR_DEEPSEEK_API_KEY_HERE (Optional)
 
-# -- Supabase (Phase 4A, 4B, 4C, 5A, 5B & 5B.1) --
+# -- Supabase --
 NEXT_PUBLIC_SUPABASE_URL=YOUR_SUPABASE_PROJECT_URL_HERE
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY_HERE
 ```
 
 ---
 
-## 4. Known Limitations
+## 5. Known Limitations
 
-- **No Email Body Persistence:** Email bodies and HTML content are discarded immediately after categorization and are never stored in the database.
-- **Manual Scheduler Triggering:** Both email metadata syncing and email classification must be triggered manually via their respective test POST endpoints.
+- **Manual Trigger Only:** The workflow route must be called manually. No automated scheduling yet (Phase 6B).
+- **No Email Body Persistence:** Email bodies are discarded immediately after classification and are never stored.
+- **Batch Size:** Classification processes up to 5 pending/failed records per invocation.
 
 ---
 
-## 5. Next Recommended Phase
+## 6. Next Recommended Phase
 
-### Phase 6: Scheduler & Sync Orchestration
-1. Automate the synchronization and classification flows into a single unified background daemon or scheduler cron job.
-2. Build webhook or event-based syncing when Zoho Mail receives new incoming emails.
+### Phase 6B: Protected Scheduled Trigger
+1. Add a protected cron or scheduled endpoint that automatically calls the workflow orchestrator on a fixed interval.
+2. Secure the trigger with a shared secret header so it cannot be called by arbitrary external parties.
