@@ -13,6 +13,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { classifyEmail } from "@/lib/classify/emailClassification";
 import { tryRegexExtract } from "@/lib/classify/regexExtractor";
 import { classifyWithAI } from "@/lib/classify/aiClassifier";
+import { extractOriginalRecipient } from "@/lib/classify/extractRecipient";
+import { mapRecipientToClient } from "@/lib/zoho/mapRecipientToClient";
 
 const DETERMINISTIC_CONFIDENCE_THRESHOLD = 0.8;
 
@@ -173,7 +175,43 @@ async function refreshZohoToken(
   return newAccessToken;
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+// ── Header fetch helper ────────────────────────────────────────────────────────
+
+/**
+ * Fetch raw SMTP headers for a message.
+ * Returns the raw headerContent string in memory only — never logged or stored.
+ * Returns null on any failure so routing can be marked unroutable without
+ * failing the classification step.
+ */
+async function fetchMessageHeaders(
+  mailBaseUrl: string,
+  zohoAccountId: string,
+  folderId: string,
+  messageId: string,
+  accessToken: string,
+): Promise<string | null> {
+  try {
+    const url = `${mailBaseUrl}/accounts/${zohoAccountId}/folders/${folderId}/messages/${messageId}/header?raw=true`;
+    const res = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Zoho-oauthtoken ${accessToken}`,
+      },
+    });
+    if (!res.ok) {
+      console.error(`[Zoho Classify] Header fetch failed: ${res.status} for message ${messageId}`);
+      return null;
+    }
+    const payload = (await res.json()) as { status?: { code: number }; data?: { headerContent?: string } };
+    if (payload.status?.code !== 200) return null;
+    return payload.data?.headerContent ?? null;
+  } catch {
+    console.error(`[Zoho Classify] Header fetch threw for message ${messageId}`);
+    return null;
+  }
+}
+
+// ── Dry-run implementation ─────────────────────────────────────────────────
 
 // ── Dry-run implementation ─────────────────────────────────────────────────
 
@@ -486,6 +524,25 @@ export async function classifyEmails(
       const sender: string = emailRecord.sender ?? details.sender ?? "";
       const receivedDate: string = emailRecord.received_at ?? "";
 
+      // ── Routing extraction (header fetch is best-effort; failure → unroutable, not failed) ──
+      const rawHeaders = await fetchMessageHeaders(
+        mailBaseUrl, zohoAccountId, folderId, messageId, accessToken,
+      );
+      const routingResult = extractOriginalRecipient({
+        rawHeaders: rawHeaders ?? "",
+        toAddress: details.toAddress ?? "",
+        ccAddress: details.ccAddress ?? "",
+        fromAddress: details.fromAddress ?? sender,
+        trackerMailbox: connection.email_address,
+      });
+      const mappingResult = mapRecipientToClient(
+        routingResult.originalRecipient,
+        routingResult.routingStatus,
+      );
+      console.log(
+        `[Zoho Classify] Routing message ${messageId}: ${routingResult.routingStatus} (${routingResult.reasonCode})`,
+      );
+
       // Step 1 — deterministic classifier (free, no API cost)
       let classifier_source: "deterministic" | "regex" | "ai";
       const deterministicResult = classifyEmail({ subject, body: bodyText, sender, receivedDate });
@@ -533,6 +590,12 @@ export async function classifyEmails(
           priority: (classification as { priority?: string }).priority ?? null,
           reason: (classification as { reason?: string }).reason ?? null,
           classifier_source,
+          // routing fields
+          original_recipient: routingResult.originalRecipient,
+          email_direction: routingResult.direction,
+          routing_confidence: routingResult.routingConfidence,
+          routing_status: routingResult.routingStatus,
+          client_id: mappingResult.clientId ?? null,
           classified_at: new Date().toISOString(),
           classification_status: "classified",
           updated_at: new Date().toISOString(),
