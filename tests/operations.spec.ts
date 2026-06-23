@@ -169,6 +169,25 @@ test.describe("ApplyWizard Email Operations Console Prototype E2E Tests", () => 
     await expect(page.locator(".metric-card").first()).toBeVisible();
   });
 
+  test("Phase 2 unreleased controls are hidden", async ({ page }, testInfo) => {
+    await page.goto("/clients");
+    await page.waitForSelector(".clients-page-container");
+    await expect(page.getByRole("button", { name: "Add Client Mailbox" })).toHaveCount(0);
+
+    if (testInfo.project.name === "desktop" || testInfo.project.name === "mobile") {
+      await captureScreenshot(page, testInfo.project.name, "phase2-clients");
+    }
+
+    await page.goto("/ca-portfolio");
+    await page.waitForSelector(".ca-portfolio-container");
+    await expect(page.getByRole("button", { name: "Reassign Client" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Add Advisor" })).toHaveCount(0);
+
+    if (testInfo.project.name === "desktop" || testInfo.project.name === "mobile") {
+      await captureScreenshot(page, testInfo.project.name, "phase2-ca-portfolio");
+    }
+  });
+
   test("Mailbox Connections mapping flow", async ({ page }, testInfo) => {
     const viewport = testInfo.project.name;
 

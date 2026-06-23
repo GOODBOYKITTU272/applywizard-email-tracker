@@ -153,14 +153,7 @@ export default function CAPortfolioPage() {
             Manage advisor workloads, assign clients, and monitor operation queues across your CA team.
           </p>
         </div>
-        <div className="header-button-group">
-          <button className="btn btn-secondary" onClick={() => setShowAssignClientModal(true)}>
-            🔄 Reassign Client
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowAddAdvisorModal(true)}>
-            👔 Add Advisor
-          </button>
-        </div>
+        {/* Reassign Client and Add Advisor buttons are hidden in current phase */}
       </header>
 
       {/* ── Operations Summary Cards ── */}
