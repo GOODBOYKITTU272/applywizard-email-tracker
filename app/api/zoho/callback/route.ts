@@ -15,17 +15,58 @@ function clearOAuthState(response: NextResponse): NextResponse {
 }
 
 /**
+ * Parse the state cookie.
+ * Supports the new JSON format { csrf, mailbox } and the legacy plain-UUID format
+ * (backward compat for any in-flight sessions from before this change).
+ */
+function parseStateCookie(raw: string): { csrf: string; mailbox: string } {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as Record<string, unknown>).csrf === "string"
+    ) {
+      return {
+        csrf: (parsed as Record<string, unknown>).csrf as string,
+        mailbox:
+          typeof (parsed as Record<string, unknown>).mailbox === "string"
+            ? ((parsed as Record<string, unknown>).mailbox as string)
+            : "",
+      };
+    }
+  } catch {
+    // Legacy: cookie is a plain UUID string (no mailbox targeting)
+  }
+  return { csrf: raw, mailbox: "" };
+}
+
+/**
  * GET /api/zoho/callback
  *
  * Validates OAuth state, exchanges the one-time code, reads Zoho account
  * metadata, and stores the connection in Supabase. It never reads emails.
+ *
+ * When the login flow included ?mailbox=..., this callback requires an exact
+ * match in the returned Zoho accounts. It never falls back to the admin mailbox.
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url);
   const receivedState = searchParams.get("state");
-  const expectedState = request.cookies.get(STATE_COOKIE)?.value;
+  const rawCookie = request.cookies.get(STATE_COOKIE)?.value;
 
-  if (!receivedState || !expectedState || receivedState !== expectedState) {
+  if (!receivedState || !rawCookie) {
+    return clearOAuthState(
+      NextResponse.json(
+        { error: "Invalid OAuth state. Please start the login flow again." },
+        { status: 400 },
+      ),
+    );
+  }
+
+  const { csrf: expectedCsrf, mailbox: requestedMailbox } = parseStateCookie(rawCookie);
+
+  if (receivedState !== expectedCsrf) {
     return clearOAuthState(
       NextResponse.json(
         { error: "Invalid OAuth state. Please start the login flow again." },
@@ -132,10 +173,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const expiresIn = Number(tokenData.expires_in);
 
   console.log("[Zoho OAuth] access_token_received:", Boolean(accessToken));
-  console.log(
-    "[Zoho OAuth] refresh_token_received:",
-    Boolean(newRefreshToken),
-  );
+  console.log("[Zoho OAuth] refresh_token_received:", Boolean(newRefreshToken));
 
   if (!accessToken || !Number.isFinite(expiresIn) || expiresIn <= 0) {
     return clearOAuthState(
@@ -186,24 +224,55 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     typeof accountPayload === "object" && accountPayload !== null
       ? (accountPayload as Record<string, unknown>).data
       : null;
-  // ponytail: use the first enabled Zoho mailbox; add a chooser only if one
-  // authorization can legitimately connect multiple Zoho mailboxes.
-  const account = Array.isArray(accounts)
-    ? accounts.find(
-        (value) =>
-          typeof value === "object" &&
-          value !== null &&
-          (value as Record<string, unknown>).type === "ZOHO_ACCOUNT" &&
-          (value as Record<string, unknown>).enabled !== false &&
-          typeof (value as Record<string, unknown>).accountId === "string" &&
-          ((value as Record<string, unknown>).accountId as string).trim()
-            .length > 0 &&
-          typeof (value as Record<string, unknown>).primaryEmailAddress ===
-            "string" &&
-          ((value as Record<string, unknown>).primaryEmailAddress as string)
-            .trim().length > 0,
-      )
-    : null;
+
+  if (!Array.isArray(accounts)) {
+    return clearOAuthState(
+      NextResponse.json(
+        { error: "Zoho did not return a usable mail account." },
+        { status: 502 },
+      ),
+    );
+  }
+
+  // Predicate: a well-formed, enabled Zoho mail account entry.
+  const isValidAccount = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).type === "ZOHO_ACCOUNT" &&
+    (value as Record<string, unknown>).enabled !== false &&
+    typeof (value as Record<string, unknown>).accountId === "string" &&
+    ((value as Record<string, unknown>).accountId as string).trim().length > 0 &&
+    typeof (value as Record<string, unknown>).primaryEmailAddress === "string" &&
+    ((value as Record<string, unknown>).primaryEmailAddress as string).trim().length > 0;
+
+  let account: Record<string, unknown> | null = null;
+
+  if (requestedMailbox) {
+    // Targeted flow: require exact match to the requested mailbox.
+    // Never fall back to any other account.
+    const match = accounts.find(
+      (a) =>
+        isValidAccount(a) &&
+        (a.primaryEmailAddress as string).toLowerCase().trim() === requestedMailbox,
+    );
+    if (!match) {
+      console.error("[Zoho OAuth] Requested mailbox not found in returned accounts.");
+      return clearOAuthState(
+        NextResponse.json(
+          {
+            error:
+              "Requested mailbox was not returned by Zoho. " +
+              "Verify it is a separate Zoho Mail account and retry.",
+          },
+          { status: 400 },
+        ),
+      );
+    }
+    account = match as Record<string, unknown>;
+  } else {
+    // Generic flow: first valid account (original behavior).
+    account = (accounts.find(isValidAccount) ?? null) as Record<string, unknown> | null;
+  }
 
   if (!account) {
     return clearOAuthState(
@@ -214,16 +283,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const zohoAccountId = (account as Record<string, unknown>).accountId as string;
-  const emailAddress = (
-    account as Record<string, unknown>
-  ).primaryEmailAddress as string;
+  const zohoAccountId = account.accountId as string;
+  const emailAddress = (account.primaryEmailAddress as string).trim().toLowerCase();
 
   const supabase = createSupabaseServerClient();
   const { data: existing, error: readError } = await supabase
     .from("zoho_connections")
     .select("refresh_token")
-    .eq("zoho_account_id", zohoAccountId)
+    .eq("email_address", emailAddress)
     .maybeSingle();
 
   if (readError) {
@@ -238,9 +305,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const refreshToken =
     newRefreshToken ||
-    (typeof existing?.refresh_token === "string"
-      ? existing.refresh_token
-      : null);
+    (typeof existing?.refresh_token === "string" ? existing.refresh_token : null);
 
   if (!refreshToken) {
     return clearOAuthState(
@@ -258,7 +323,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const { error: writeError } = await supabase.from("zoho_connections").upsert(
     {
       zoho_account_id: zohoAccountId,
-      email_address: emailAddress.trim().toLowerCase(),
+      email_address: emailAddress,
       status: "active",
       access_token: accessToken,
       refresh_token: refreshToken,
@@ -267,7 +332,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       ).toISOString(),
       updated_at: now.toISOString(),
     },
-    { onConflict: "zoho_account_id" },
+    { onConflict: "email_address" },
   );
 
   if (writeError) {
