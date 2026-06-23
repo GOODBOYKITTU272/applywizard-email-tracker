@@ -3,6 +3,7 @@
 import React, { useState, useMemo, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { mockApplications, mockClients, mockCAs } from "@/lib/mockData";
+import { classifyApplications, JOB_CATEGORIES } from "@/lib/classify/classifyMockEmails";
 
 function ApplicationsContent() {
   const router = useRouter();
@@ -18,10 +19,20 @@ function ApplicationsContent() {
   const [selectedCategory, setSelectedCategory] = useState(initialCategory);
   const [selectedStatus, setSelectedStatus] = useState("all");
 
+  // ── Derived classification (single source of truth) ─────────────────────────
+  const classifiedApps = useMemo(
+    () => classifyApplications(mockApplications),
+    []
+  );
+
   // ── Filtering Logic ─────────────────────────────────────────────────────────
   const filteredApps = useMemo(() => {
-    return mockApplications.filter((app) => {
-      // 1. Search term match (company, title, subject, sender)
+    return classifiedApps.filter((app) => {
+      // Default view: job-related categories only (no OTP, system, verification, spam)
+      const isJobCategory = JOB_CATEGORIES.includes(app.derived.category);
+      if (!isJobCategory && selectedCategory === "all") return false;
+
+      // 1. Search term match
       const matchesSearch =
         searchTerm === "" ||
         app.companyName.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -35,20 +46,20 @@ function ApplicationsContent() {
       // 3. Client match
       const matchesClient = selectedClient === "all" || app.clientId === selectedClient;
 
-      // 4. Category match
+      // 4. Category match (derived)
       const matchesCategory =
-        selectedCategory === "all" || app.category === selectedCategory;
+        selectedCategory === "all" || app.derived.category === selectedCategory;
 
-      // 5. Status match
+      // 5. Status match (derived needs_human_review)
       const matchesStatus =
         selectedStatus === "all" ||
-        (selectedStatus === "classified" && app.status === "classified" && !app.needsHumanReview) ||
-        (selectedStatus === "review" && app.needsHumanReview) ||
+        (selectedStatus === "classified" && !app.derived.needs_human_review) ||
+        (selectedStatus === "review" && app.derived.needs_human_review) ||
         (selectedStatus === "failed" && app.status === "failed");
 
       return matchesSearch && matchesCA && matchesClient && matchesCategory && matchesStatus;
     });
-  }, [searchTerm, selectedCA, selectedClient, selectedCategory, selectedStatus]);
+  }, [searchTerm, selectedCA, selectedClient, selectedCategory, selectedStatus, classifiedApps]);
 
   return (
     <div className="apps-page-container">
@@ -192,13 +203,13 @@ function ApplicationsContent() {
                         <span className="folder-tag">{app.folderName}</span>
                       </td>
                       <td>
-                        <span className={`badge badge-${app.category}`}>
-                          {app.category.replace("_", " ")}
+                        <span className={`badge badge-${app.derived.category}`}>
+                          {app.derived.category.replace("_", " ")}
                         </span>
                       </td>
-                      <td className="font-tabular">{(app.confidence * 100).toFixed(0)}%</td>
+                      <td className="font-tabular">{(app.derived.confidence * 100).toFixed(0)}%</td>
                       <td>
-                        {app.needsHumanReview ? (
+                        {app.derived.needs_human_review ? (
                           <span className="action-tag tag-urgent">⚠️ Needs Review</span>
                         ) : (
                           <span className="action-tag tag-success">✓ Auto-OK</span>
@@ -223,8 +234,8 @@ function ApplicationsContent() {
                       <div className="m-client">{app.clientName}</div>
                       <div className="m-ca">CA: {app.caName}</div>
                     </div>
-                    <span className={`badge badge-${app.category}`}>
-                      {app.category.replace("_", " ")}
+                    <span className={`badge badge-${app.derived.category}`}>
+                      {app.derived.category.replace("_", " ")}
                     </span>
                   </div>
 
@@ -237,7 +248,7 @@ function ApplicationsContent() {
 
                   <div className="card-bottom-row">
                     <span className="folder-tag">{app.folderName}</span>
-                    {app.needsHumanReview ? (
+                    {app.derived.needs_human_review ? (
                       <span className="action-tag tag-urgent">⚠️ Review</span>
                     ) : (
                       <span className="action-tag tag-success">✓ Auto-OK</span>

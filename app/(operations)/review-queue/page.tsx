@@ -1,15 +1,30 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
-import { mockApplications, Application } from "@/lib/mockData";
+import { mockApplications } from "@/lib/mockData";
+import {
+  classifyApplications,
+  sortByPriority,
+  REVIEW_CATEGORIES,
+  ClassifiedApplication,
+} from "@/lib/classify/classifyMockEmails";
 
 export default function ReviewQueuePage() {
+  // Source: derived records, review-eligible categories only, priority-sorted
+  const initialQueue = useMemo(() => {
+    const all = classifyApplications(mockApplications);
+    const reviewable = all.filter(
+      (a) =>
+        a.derived.needs_human_review &&
+        REVIEW_CATEGORIES.includes(a.derived.category)
+    );
+    return sortByPriority(reviewable);
+  }, []);
+
   // ── States ──────────────────────────────────────────────────────────────────
-  const [queueItems, setQueueItems] = useState<Application[]>(
-    mockApplications.filter((app) => app.needsHumanReview)
-  );
-  const [selectedItem, setSelectedItem] = useState<Application | null>(
-    mockApplications.filter((app) => app.needsHumanReview)[0] || null
+  const [queueItems, setQueueItems] = useState<ClassifiedApplication[]>(initialQueue);
+  const [selectedItem, setSelectedItem] = useState<ClassifiedApplication | null>(
+    initialQueue[0] || null
   );
   const [activeTab, setActiveTab] = useState<string>("all");
 
@@ -17,12 +32,12 @@ export default function ReviewQueuePage() {
   const filteredItems = useMemo(() => {
     return queueItems.filter((item) => {
       if (activeTab === "all") return true;
-      if (activeTab === "offers") return item.category === "job_offer";
-      if (activeTab === "interviews") return item.category === "interview_invite";
-      if (activeTab === "assessments") return item.category === "assessment";
-      if (activeTab === "replies") return item.category === "recruiter_reply";
-      if (activeTab === "followups") return item.category === "follow_up_needed";
-      if (activeTab === "unknown") return item.category === "unknown" || item.status === "failed";
+      if (activeTab === "offers") return item.derived.category === "job_offer";
+      if (activeTab === "interviews") return item.derived.category === "interview_invite";
+      if (activeTab === "assessments") return item.derived.category === "assessment";
+      if (activeTab === "replies") return item.derived.category === "recruiter_reply";
+      if (activeTab === "followups") return item.derived.category === "follow_up_needed";
+      if (activeTab === "unknown") return item.derived.category === "unknown" || item.status === "failed";
       return true;
     });
   }, [queueItems, activeTab]);
@@ -43,8 +58,11 @@ export default function ReviewQueuePage() {
     }
   };
 
-  // Due today count (e.g. today's date or matches current date 23 June 2026)
-  const dueTodayCount = queueItems.filter((item) => item.deadline === "2026-06-25" || item.deadline === "2026-06-26").length;
+  const dueTodayCount = queueItems.filter(
+    (item) =>
+      item.derived.deadline === "2026-06-25" ||
+      item.derived.deadline === "2026-06-26"
+  ).length;
 
   return (
     <div className="queue-page-container">
@@ -73,22 +91,22 @@ export default function ReviewQueuePage() {
               All ({queueItems.length})
             </button>
             <button className={`tab-btn ${activeTab === "offers" ? "active" : ""}`} onClick={() => setActiveTab("offers")}>
-              Offers ({queueItems.filter((i) => i.category === "job_offer").length})
+              Offers ({queueItems.filter((i) => i.derived.category === "job_offer").length})
             </button>
             <button className={`tab-btn ${activeTab === "interviews" ? "active" : ""}`} onClick={() => setActiveTab("interviews")}>
-              Interviews ({queueItems.filter((i) => i.category === "interview_invite").length})
+              Interviews ({queueItems.filter((i) => i.derived.category === "interview_invite").length})
             </button>
             <button className={`tab-btn ${activeTab === "assessments" ? "active" : ""}`} onClick={() => setActiveTab("assessments")}>
-              Assessments ({queueItems.filter((i) => i.category === "assessment").length})
+              Assessments ({queueItems.filter((i) => i.derived.category === "assessment").length})
             </button>
             <button className={`tab-btn ${activeTab === "replies" ? "active" : ""}`} onClick={() => setActiveTab("replies")}>
-              Replies ({queueItems.filter((i) => i.category === "recruiter_reply").length})
+              Replies ({queueItems.filter((i) => i.derived.category === "recruiter_reply").length})
             </button>
             <button className={`tab-btn ${activeTab === "followups" ? "active" : ""}`} onClick={() => setActiveTab("followups")}>
-              Follow-ups ({queueItems.filter((i) => i.category === "follow_up_needed").length})
+              Follow-ups ({queueItems.filter((i) => i.derived.category === "follow_up_needed").length})
             </button>
             <button className={`tab-btn ${activeTab === "unknown" ? "active" : ""}`} onClick={() => setActiveTab("unknown")}>
-              Failed ({queueItems.filter((i) => i.category === "unknown" || i.status === "failed").length})
+              Failed ({queueItems.filter((i) => i.derived.category === "unknown" || i.status === "failed").length})
             </button>
           </div>
 
@@ -117,12 +135,12 @@ export default function ReviewQueuePage() {
                     </div>
                     <div className="item-card-subject">{item.subject}</div>
                     <div className="item-card-footer">
-                      <span className={`badge badge-${item.category}`}>
-                        {item.category.replace("_", " ")}
+                      <span className={`badge badge-${item.derived.category}`}>
+                        {item.derived.category.replace("_", " ")}
                       </span>
-                      {item.deadline && (
+                      {item.derived.deadline && (
                         <span className="card-deadline font-tabular text-urgent">
-                          📅 {item.deadline}
+                          📅 {item.derived.deadline}
                         </span>
                       )}
                     </div>
@@ -145,8 +163,8 @@ export default function ReviewQueuePage() {
             <div className="resolution-details-card">
               <header className="resolution-card-header">
                 <div>
-                  <span className={`badge badge-${selectedItem.category}`}>
-                    {selectedItem.category.replace("_", " ")}
+                  <span className={`badge badge-${selectedItem.derived.category}`}>
+                    {selectedItem.derived.category.replace("_", " ")}
                   </span>
                   <h2>{selectedItem.companyName || selectedItem.sender}</h2>
                   <p className="subtitle-detail">
@@ -163,10 +181,10 @@ export default function ReviewQueuePage() {
               <div className="required-action-card">
                 <h4>Suggested Operational Action:</h4>
                 <p>{selectedItem.actionRequired || "No action recorded. Manual check recommended."}</p>
-                {selectedItem.deadline && (
+                {selectedItem.derived.deadline && (
                   <div className="action-deadline">
                     <span>Deadline: </span>
-                    <strong className="text-urgent font-tabular">📅 {selectedItem.deadline}</strong>
+                    <strong className="text-urgent font-tabular">📅 {selectedItem.derived.deadline}</strong>
                   </div>
                 )}
               </div>
@@ -175,7 +193,7 @@ export default function ReviewQueuePage() {
               <div className="classification-box">
                 <div className="classification-field">
                   <span>Confidence:</span>
-                  <strong className="font-tabular">{(selectedItem.confidence * 100).toFixed(0)}%</strong>
+                  <strong className="font-tabular">{(selectedItem.derived.confidence * 100).toFixed(0)}%</strong>
                 </div>
                 <div className="classification-field">
                   <span>Sync Folder:</span>

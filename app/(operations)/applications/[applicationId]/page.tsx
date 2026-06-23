@@ -3,6 +3,7 @@
 import React, { useState, use } from "react";
 import Link from "next/link";
 import { mockApplications } from "@/lib/mockData";
+import { classifyEmail } from "@/lib/classify/emailClassification";
 
 interface PageProps {
   params: Promise<{ applicationId: string }>;
@@ -17,6 +18,17 @@ export default function ApplicationDetailPage({ params }: PageProps) {
 
   // Local state for interactive "Mark Reviewed" mock toggle
   const [isReviewed, setIsReviewed] = useState(false);
+  const [showWhySection, setShowWhySection] = useState(false);
+
+  // Derived classification for this record
+  const derived = app
+    ? classifyEmail({
+        subject: app.subject,
+        body: app.body,
+        sender: app.sender,
+        receivedDate: app.receivedDate,
+      })
+    : null;
 
   if (!app) {
     return (
@@ -98,15 +110,15 @@ export default function ApplicationDetailPage({ params }: PageProps) {
             <div className="meta-info-list">
               <div className="meta-info-row">
                 <span className="info-label">Category:</span>
-                <span className={`badge badge-${app.category}`}>
-                  {app.category.replace("_", " ")}
+                <span className={`badge badge-${derived?.category ?? app.category}`}>
+                  {(derived?.category ?? app.category).replace("_", " ")}
                 </span>
               </div>
 
               <div className="meta-info-row">
-                <span className="info-label">AI Confidence:</span>
+                <span className="info-label">Confidence:</span>
                 <span className="info-value font-tabular">
-                  {(app.confidence * 100).toFixed(0)}%
+                  {((derived?.confidence ?? app.confidence) * 100).toFixed(0)}%
                 </span>
               </div>
 
@@ -122,10 +134,25 @@ export default function ApplicationDetailPage({ params }: PageProps) {
 
               <div className="meta-info-row border-top-line">
                 <span className="info-label">Needs CA Review:</span>
-                {app.needsHumanReview ? (
+                {(derived?.needs_human_review ?? app.needsHumanReview) ? (
                   <span className="review-badge tag-urgent">⚠️ Yes</span>
                 ) : (
                   <span className="review-badge tag-success">✓ No (Auto-OK)</span>
+                )}
+              </div>
+
+              {/* Why classified expandable */}
+              <div className="why-classified-section">
+                <button
+                  className="why-toggle-btn"
+                  onClick={() => setShowWhySection((v) => !v)}
+                >
+                  {showWhySection ? "▲" : "▼"} Why classified this way?
+                </button>
+                {showWhySection && derived && (
+                  <div className="why-content">
+                    {derived.reason}
+                  </div>
                 )}
               </div>
             </div>
@@ -147,10 +174,10 @@ export default function ApplicationDetailPage({ params }: PageProps) {
                 </div>
               )}
 
-              {app.deadline && (
+              {(derived?.deadline ?? app.deadline) && (
                 <div className="deadline-box">
                   <div className="deadline-box-title">Action Deadline:</div>
-                  <strong className="text-urgent font-tabular">📅 {app.deadline}</strong>
+                  <strong className="text-urgent font-tabular">📅 {derived?.deadline ?? app.deadline}</strong>
                 </div>
               )}
             </div>
@@ -461,6 +488,32 @@ export default function ApplicationDetailPage({ params }: PageProps) {
           font-size: 0.8125rem;
           line-height: 1.4;
           color: var(--text-dark);
+        }
+
+        .why-classified-section {
+          border-top: 1px dashed var(--border-gray);
+          padding-top: 10px;
+        }
+
+        .why-toggle-btn {
+          background: none;
+          border: none;
+          color: var(--primary-blue);
+          font-size: 0.8125rem;
+          font-weight: 600;
+          cursor: pointer;
+          padding: 0;
+        }
+
+        .why-content {
+          margin-top: 8px;
+          font-size: 0.8125rem;
+          color: var(--text-muted);
+          background-color: var(--workspace-bg);
+          padding: 10px 12px;
+          border-radius: 6px;
+          border: 1px solid var(--border-gray);
+          line-height: 1.5;
         }
 
         .action-required-box-none {

@@ -4,6 +4,7 @@ import React, { use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { mockClients, mockApplications } from "@/lib/mockData";
+import { classifyApplications } from "@/lib/classify/classifyMockEmails";
 
 interface PageProps {
   params: Promise<{ clientId: string }>;
@@ -17,11 +18,20 @@ export default function ClientDashboardPage({ params }: PageProps) {
   // Find client
   const client = mockClients.find((c) => c.id === clientId);
 
-  // Filter applications for this client
-  const clientApps = mockApplications.filter((a) => a.clientId === clientId);
+  // Derived classified applications for this client
+  const clientApps = classifyApplications(
+    mockApplications.filter((a) => a.clientId === clientId)
+  );
 
-  // Filter attention items (needs review) for this client
-  const attentionItems = clientApps.filter((a) => a.needsHumanReview);
+  // Attention items (derived needs_human_review)
+  const attentionItems = clientApps.filter((a) => a.derived.needs_human_review);
+
+  // Derived metric counts
+  const derivedAppCount = clientApps.filter((a) => a.derived.category === "application_received").length;
+  const derivedInterviewCount = clientApps.filter((a) => a.derived.category === "interview_invite").length;
+  const derivedAssessmentCount = clientApps.filter((a) => a.derived.category === "assessment").length;
+  const derivedRejectionCount = clientApps.filter((a) => a.derived.category === "rejection").length;
+  const derivedReviewCount = attentionItems.length;
 
   if (!client) {
     return (
@@ -78,31 +88,31 @@ export default function ClientDashboardPage({ params }: PageProps) {
 
         <div className="metric-card">
           <span className="metric-lbl">Applications</span>
-          <div className="metric-val">{client.applicationsCount}</div>
+          <div className="metric-val">{derivedAppCount}</div>
           <span className="trend-lbl text-success">Submitted</span>
         </div>
 
         <div className="metric-card">
           <span className="metric-lbl">Interviews</span>
-          <div className="metric-val">{client.interviewsCount}</div>
+          <div className="metric-val">{derivedInterviewCount}</div>
           <span className="trend-lbl text-success">Scheduled</span>
         </div>
 
         <div className="metric-card">
           <span className="metric-lbl">Assessments</span>
-          <div className="metric-val">{client.assessmentsCount}</div>
+          <div className="metric-val">{derivedAssessmentCount}</div>
           <span className="trend-lbl text-pending">Deadlines pending</span>
         </div>
 
         <div className="metric-card">
           <span className="metric-lbl">Rejections</span>
-          <div className="metric-val">{client.rejectionsCount}</div>
+          <div className="metric-val">{derivedRejectionCount}</div>
           <span className="trend-lbl text-muted">Closed postings</span>
         </div>
 
         <div className="metric-card highlight-urgent">
           <span className="metric-lbl">Review Required</span>
-          <div className="metric-val text-urgent">{client.reviewRequired}</div>
+          <div className="metric-val text-urgent">{derivedReviewCount}</div>
           <span className="trend-lbl text-urgent font-bold">Needs CA review</span>
         </div>
       </section>
@@ -131,11 +141,11 @@ export default function ClientDashboardPage({ params }: PageProps) {
                 {attentionItems.map((item) => (
                   <div key={item.id} className="attention-item">
                     <div className="item-top-row">
-                      <span className={`badge badge-${item.category}`}>
-                        {item.category.replace("_", " ")}
+                      <span className={`badge badge-${item.derived.category}`}>
+                        {item.derived.category.replace("_", " ")}
                       </span>
-                      {item.deadline && (
-                        <span className="deadline-lbl font-tabular">Due: {item.deadline}</span>
+                      {item.derived.deadline && (
+                        <span className="deadline-lbl font-tabular">Due: {item.derived.deadline}</span>
                       )}
                     </div>
                     <h4 className="item-subject">{item.subject}</h4>
@@ -200,13 +210,13 @@ export default function ClientDashboardPage({ params }: PageProps) {
                             <td>{app.companyName || app.sender}</td>
                             <td className="font-tabular">{dateFormatted}</td>
                             <td>
-                              <span className={`badge badge-${app.category}`}>
-                                {app.category.replace("_", " ")}
+                              <span className={`badge badge-${app.derived.category}`}>
+                                {app.derived.category.replace("_", " ")}
                               </span>
                             </td>
-                            <td className="font-tabular">{(app.confidence * 100).toFixed(0)}%</td>
+                            <td className="font-tabular">{(app.derived.confidence * 100).toFixed(0)}%</td>
                             <td>
-                              {app.needsHumanReview ? (
+                              {app.derived.needs_human_review ? (
                                 <span className="action-tag tag-urgent">Review</span>
                               ) : (
                                 <span className="action-tag tag-success">Auto</span>
@@ -228,10 +238,10 @@ export default function ClientDashboardPage({ params }: PageProps) {
                       onClick={() => router.push(`/applications/${app.id}`)}
                     >
                       <div className="mobile-log-header">
-                        <span className={`badge badge-${app.category}`}>
-                          {app.category.replace("_", " ")}
+                        <span className={`badge badge-${app.derived.category}`}>
+                          {app.derived.category.replace("_", " ")}
                         </span>
-                        {app.needsHumanReview && (
+                        {app.derived.needs_human_review && (
                           <span className="action-tag tag-urgent">Review</span>
                         )}
                       </div>

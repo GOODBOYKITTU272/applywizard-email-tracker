@@ -3,40 +3,59 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { mockApplications, mockClients, mockCAs } from "@/lib/mockData";
+import { classifyApplications, REVIEW_CATEGORIES } from "@/lib/classify/classifyMockEmails";
+import {
+  IconMail,
+  IconApplications,
+  IconClients,
+  IconAssessment,
+  IconRejection,
+  IconWarning,
+  IconRefresh,
+} from "@/components/icons";
 
 export default function OverviewPage() {
   const [selectedCA, setSelectedCA] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState("all");
+  const [dateRange, setDateRange] = useState("last_7_days");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // ── Derived classification (single source of truth) ─────────────────────────
+  const classifiedApps = classifyApplications(mockApplications);
 
   // ── Data Calculations ────────────────────────────────────────────────────────
-  const totalEmails = mockApplications.length;
-  const totalAppsCount = mockApplications.filter(
-    (a) => a.category === "application_received"
+  const totalEmails = classifiedApps.length;
+  const totalAppsCount = classifiedApps.filter(
+    (a) => a.derived.category === "application_received"
   ).length;
-  const interviewsCount = mockApplications.filter(
-    (a) => a.category === "interview_invite"
+  const interviewsCount = classifiedApps.filter(
+    (a) => a.derived.category === "interview_invite"
   ).length;
-  const assessmentsCount = mockApplications.filter(
-    (a) => a.category === "assessment"
+  const assessmentsCount = classifiedApps.filter(
+    (a) => a.derived.category === "assessment"
   ).length;
-  const rejectionsCount = mockApplications.filter(
-    (a) => a.category === "rejection"
+  const rejectionsCount = classifiedApps.filter(
+    (a) => a.derived.category === "rejection"
   ).length;
-  const reviewRequiredCount = mockApplications.filter(
-    (a) => a.needsHumanReview
+  const reviewRequiredCount = classifiedApps.filter(
+    (a) => a.derived.needs_human_review
   ).length;
 
-  // Filtered list for "Attention Needed" (e.g. Needs Human Review & High Priority Categories)
-  const attentionItems = mockApplications
-    .filter((a) => a.needsHumanReview)
+  // Attention Needed: only job-related review categories, no OTPs/system emails
+  const attentionItems = classifiedApps
+    .filter(
+      (a) =>
+        a.derived.needs_human_review &&
+        REVIEW_CATEGORIES.includes(a.derived.category)
+    )
     .slice(0, 4);
 
   // Recent Emails List (latest 5)
-  const recentEmails = mockApplications.slice(0, 5);
+  const recentEmails = classifiedApps.slice(0, 5);
 
-  // Top Categories counts
-  const categoryCounts = mockApplications.reduce((acc, curr) => {
-    acc[curr.category] = (acc[curr.category] || 0) + 1;
+  // Top Categories counts (derived)
+  const categoryCounts = classifiedApps.reduce((acc, curr) => {
+    acc[curr.derived.category] = (acc[curr.derived.category] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
 
@@ -48,6 +67,13 @@ export default function OverviewPage() {
   // Mailbox Health status counts
   const healthyCount = mockClients.filter((c) => c.mailboxStatus === "Active").length;
   const issueCount = mockClients.filter((c) => c.mailboxStatus !== "Active").length;
+
+  const handleRefresh = () => {
+    setIsRefreshing(true);
+    setTimeout(() => {
+      setIsRefreshing(false);
+    }, 800);
+  };
 
   return (
     <div className="overview-container">
@@ -82,15 +108,34 @@ export default function OverviewPage() {
               <option value="issue">Needs Attention</option>
             </select>
           </div>
+
+          <div className="select-wrapper">
+            <label htmlFor="date-range-select">Date Range</label>
+            <select
+              id="date-range-select"
+              value={dateRange}
+              onChange={(e) => setDateRange(e.target.value)}
+            >
+              <option value="today">Today</option>
+              <option value="last_7_days">Last 7 Days</option>
+              <option value="last_30_days">Last 30 Days</option>
+              <option value="all_time">All Time</option>
+            </select>
+          </div>
         </div>
 
         <div className="sync-info">
-          <span className="last-sync">Last synced: 2 mins ago</span>
+          <span className="last-sync">
+            {isRefreshing ? "Refreshing feed..." : "Last synced: 2 mins ago"}
+          </span>
           <button
             className="btn btn-secondary btn-icon"
-            onClick={() => alert("Syncing operations feed...")}
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
           >
-            🔄 Refresh Feed
+            <IconRefresh size={16} className={isRefreshing ? "spin-animation" : ""} />
+            Refresh Feed
           </button>
         </div>
       </section>
@@ -99,7 +144,9 @@ export default function OverviewPage() {
       <section className="metrics-grid">
         <Link href="/applications" className="metric-card">
           <div className="metric-meta">
-            <span className="metric-icon">📧</span>
+            <span className="metric-icon">
+              <IconMail size={16} />
+            </span>
             <span className="metric-title">Total Emails</span>
           </div>
           <div className="metric-value">{totalEmails}</div>
@@ -108,7 +155,9 @@ export default function OverviewPage() {
 
         <Link href="/applications?category=application_received" className="metric-card">
           <div className="metric-meta">
-            <span className="metric-icon">📁</span>
+            <span className="metric-icon">
+              <IconApplications size={16} />
+            </span>
             <span className="metric-title">Applications</span>
           </div>
           <div className="metric-value">{totalAppsCount}</div>
@@ -117,7 +166,9 @@ export default function OverviewPage() {
 
         <Link href="/applications?category=interview_invite" className="metric-card">
           <div className="metric-meta">
-            <span className="metric-icon">🤝</span>
+            <span className="metric-icon">
+              <IconClients size={16} />
+            </span>
             <span className="metric-title">Interviews</span>
           </div>
           <div className="metric-value">{interviewsCount}</div>
@@ -126,7 +177,9 @@ export default function OverviewPage() {
 
         <Link href="/applications?category=assessment" className="metric-card">
           <div className="metric-meta">
-            <span className="metric-icon">📝</span>
+            <span className="metric-icon">
+              <IconAssessment size={16} />
+            </span>
             <span className="metric-title">Assessments</span>
           </div>
           <div className="metric-value">{assessmentsCount}</div>
@@ -135,7 +188,9 @@ export default function OverviewPage() {
 
         <Link href="/applications?category=rejection" className="metric-card">
           <div className="metric-meta">
-            <span className="metric-icon">❌</span>
+            <span className="metric-icon">
+              <IconRejection size={16} />
+            </span>
             <span className="metric-title">Rejections</span>
           </div>
           <div className="metric-value">{rejectionsCount}</div>
@@ -144,7 +199,9 @@ export default function OverviewPage() {
 
         <Link href="/review-queue" className="metric-card highlight-urgent">
           <div className="metric-meta">
-            <span className="metric-icon">⚠️</span>
+            <span className="metric-icon">
+              <IconWarning size={16} />
+            </span>
             <span className="metric-title">Review Required</span>
           </div>
           <div className="metric-value text-urgent">{reviewRequiredCount}</div>
@@ -168,16 +225,16 @@ export default function OverviewPage() {
               {attentionItems.map((item) => (
                 <div key={item.id} className="attention-item">
                   <div className="attention-meta">
-                    <span className={`badge badge-${item.category}`}>
-                      {item.category.replace("_", " ")}
+                    <span className={`badge badge-${item.derived.category}`}>
+                      {item.derived.category.replace("_", " ")}
                     </span>
                     <span className="attention-client">{item.clientName}</span>
                   </div>
                   <h4 className="attention-subject">{item.subject}</h4>
-                  {item.deadline && (
+                  {item.derived.deadline && (
                     <div className="attention-deadline">
                       <span>Due: </span>
-                      <strong className="text-urgent">{item.deadline}</strong>
+                      <strong className="text-urgent">{item.derived.deadline}</strong>
                     </div>
                   )}
                   <div className="attention-action">
@@ -218,11 +275,11 @@ export default function OverviewPage() {
                       <td className="cell-subject">{email.subject}</td>
                       <td>{email.folderName}</td>
                       <td>
-                        <span className={`badge badge-${email.category}`}>
-                          {email.category.replace("_", " ")}
+                        <span className={`badge badge-${email.derived.category}`}>
+                          {email.derived.category.replace("_", " ")}
                         </span>
                       </td>
-                      <td className="font-tabular">{(email.confidence * 100).toFixed(0)}%</td>
+                      <td className="font-tabular">{(email.derived.confidence * 100).toFixed(0)}%</td>
                     </tr>
                   ))}
                 </tbody>
@@ -238,14 +295,14 @@ export default function OverviewPage() {
                       <div className="m-client-name">{email.clientName}</div>
                       <div className="m-client-mailbox">{email.mailbox}</div>
                     </div>
-                    <span className={`badge badge-${email.category}`}>
-                      {email.category.replace("_", " ")}
+                    <span className={`badge badge-${email.derived.category}`}>
+                      {email.derived.category.replace("_", " ")}
                     </span>
                   </div>
                   <div className="m-card-subject">{email.subject}</div>
                   <div className="m-card-meta">
                     <span>Folder: <strong>{email.folderName}</strong></span>
-                    <span>Confidence: <strong>{(email.confidence * 100).toFixed(0)}%</strong></span>
+                    <span>Confidence: <strong>{(email.derived.confidence * 100).toFixed(0)}%</strong></span>
                   </div>
                 </div>
               ))}

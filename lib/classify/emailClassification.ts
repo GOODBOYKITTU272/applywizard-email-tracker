@@ -100,6 +100,8 @@ const ACCOUNT_CREATED_SIGNALS = [
   "account is ready",
   "account set up",
   "account setup complete",
+  "candidate profile has been",
+  "profile has been successfully set up",
 ];
 
 // Zoho/admin/security/billing — maps to system_notification
@@ -262,6 +264,8 @@ const JOB_RULES: JobRule[] = [
       "have decided to pursue other candidates",
       "position has been filled",
       "not selected",
+      "move forward with other candidates",
+      "wish you all the best",
       "wish you the best",
     ],
   },
