@@ -1,19 +1,25 @@
-# ApplyWizard Email Tracker — Phase 6A Checkpoint
+# ApplyWizard Email Tracker — Phase 6B Checkpoint
 
-This document serves as the final checkpoint for Phase 6A of the **ApplyWizard Email Tracker** project.
+This document serves as the final checkpoint for Phase 6B of the **ApplyWizard Email Tracker** project.
 
 ---
 
 ## 1. Current Phase Completed
 
-### Phase 6A: Manual Sync + Classification Orchestrator
+### Phase 6B: Protected Scheduled Trigger
 
-- **Shared Library Modules:** Extracted all business logic out of the two test routes into:
-  - `lib/zoho/syncEmails.ts` — reusable `syncEmails()` function (Phase 5A logic)
-  - `lib/zoho/classifyEmails.ts` — reusable `classifyEmails()` function (Phase 5B/5B.1 logic)
-- **Thin Wrappers:** Refactored `app/api/zoho/emails/sync/test/route.ts` and `app/api/zoho/emails/classify/test/route.ts` to call the lib functions; identical response shapes, zero logic duplication.
-- **Orchestrator Route:** Created `POST /api/zoho/workflow/test` which runs sync then classify in sequence and returns a single combined summary.
-- **Strict Boundaries:** No cron, no daemon, no scheduler, no dashboard, no email body storage, no secrets in logs or responses.
+- **Cron Route:** Created `GET /api/zoho/workflow/cron` — a protected endpoint that
+  Vercel Cron invokes once daily at 02:00 UTC.
+- **Fail-Closed Auth:** If `CRON_SECRET` is not configured on the server, the route
+  returns `401` immediately and never executes any workflow logic.
+- **Bearer Token Check:** The `Authorization` header must match `Bearer <CRON_SECRET>`
+  exactly. Missing or wrong header → `401`. Correct header → workflow runs.
+- **No Secret Leakage:** `CRON_SECRET`, tokens, and email content are never logged or
+  returned in any response.
+- **Reuse Only:** Calls `syncEmails()` and `classifyEmails()` from `lib/zoho/`.
+  Zero new business logic.
+- **Vercel Schedule:** `vercel.json` registers one cron entry at `0 2 * * *`
+  (02:00 UTC daily), which Vercel Hobby plan supports.
 
 ---
 
@@ -21,23 +27,24 @@ This document serves as the final checkpoint for Phase 6A of the **ApplyWizard E
 
 Below are the recent commits on the current branch (`main`):
 
+- **`be3ff27`** Phase 6B: add protected GET /api/zoho/workflow/cron with CRON_SECRET auth and vercel.json daily schedule
+- **`4876d23`** docs: create Phase 6A final checkpoint
 - **`1fd9970`** Phase 6A: extract sync/classify logic into lib/zoho and add POST /api/zoho/workflow/test orchestrator
 - **`15d2b44`** docs: create Phase 5B.1 final checkpoint
-- **`0d1c445`** Phase 5B.1: enable retry for failed classifications by querying both pending and failed status values
-- **`00ab960`** Phase 5B: implement metadata classification migration and POST /api/zoho/emails/classify/test route
-- **`cf4fc0d`** Phase 5A: implement zoho_email_metadata schema and POST /api/zoho/emails/sync/test route
+- **`0d1c445`** Phase 5B.1: enable retry for failed classifications
 
 ---
 
 ## 3. API Routes
 
-| Route | Method | Purpose |
-|---|---|---|
-| `/api/zoho/login` | GET | Start Zoho OAuth flow |
-| `/api/zoho/callback` | GET | Handle Zoho OAuth callback |
-| `/api/zoho/emails/sync/test` | POST | Sync latest email metadata from Zoho |
-| `/api/zoho/emails/classify/test` | POST | Classify pending/failed records |
-| `/api/zoho/workflow/test` | POST | **Phase 6A** — Orchestrate sync + classify in one call |
+| Route | Method | Auth | Purpose |
+|---|---|---|---|
+| `/api/zoho/login` | GET | None | Start Zoho OAuth flow |
+| `/api/zoho/callback` | GET | None | Handle Zoho OAuth callback |
+| `/api/zoho/emails/sync/test` | POST | None | Manual: sync email metadata |
+| `/api/zoho/emails/classify/test` | POST | None | Manual: classify pending records |
+| `/api/zoho/workflow/test` | POST | None | Manual: sync + classify in one call |
+| `/api/zoho/workflow/cron` | GET | Bearer CRON_SECRET | **Phase 6B** — scheduled trigger |
 
 ---
 
@@ -58,20 +65,50 @@ OPENAI_API_KEY=YOUR_OPENAI_API_KEY_HERE
 # -- Supabase --
 NEXT_PUBLIC_SUPABASE_URL=YOUR_SUPABASE_PROJECT_URL_HERE
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SERVICE_ROLE_KEY_HERE
+
+# -- Cron Security (Phase 6B) --
+# Generate with: openssl rand -hex 32
+# Add same value to Vercel → Project → Settings → Environment Variables
+CRON_SECRET=YOUR_CRON_SECRET_HERE
 ```
 
 ---
 
-## 5. Known Limitations
+## 5. Vercel Deployment Steps for Phase 6B
 
-- **Manual Trigger Only:** The workflow route must be called manually. No automated scheduling yet (Phase 6B).
-- **No Email Body Persistence:** Email bodies are discarded immediately after classification and are never stored.
-- **Batch Size:** Classification processes up to 5 pending/failed records per invocation.
+1. Generate a secret locally: `openssl rand -hex 32`
+2. Add `CRON_SECRET=<value>` to `.env.local` for local testing.
+3. Add the same `CRON_SECRET` to **Vercel → Project → Settings → Environment Variables**.
+4. Deploy. Vercel automatically reads `vercel.json` and registers the cron job.
+5. Vercel will call `GET /api/zoho/workflow/cron` daily at 02:00 UTC, supplying the
+   `Authorization: Bearer <CRON_SECRET>` header automatically.
 
 ---
 
-## 6. Next Recommended Phase
+## 6. Security Verification Results
 
-### Phase 6B: Protected Scheduled Trigger
-1. Add a protected cron or scheduled endpoint that automatically calls the workflow orchestrator on a fixed interval.
-2. Secure the trigger with a shared secret header so it cannot be called by arbitrary external parties.
+| Test | Expected | Result |
+|---|---|---|
+| Missing `Authorization` header | `401` | ✅ `401` |
+| Wrong `Authorization` value | `401` | ✅ `401` |
+| Correct `Authorization: Bearer <secret>` | `200` + safe counts | ✅ `200` |
+| `CRON_SECRET` not set on server | `401` (fail closed) | ✅ `401` |
+
+---
+
+## 7. Known Limitations
+
+- **Hobby Plan Rate:** Once-daily is the maximum frequency on Vercel Hobby. Pro plan
+  supports up to once per minute.
+- **No Retry on Cron Failure:** If Vercel's cron invocation fails (e.g. timeout), it
+  does not retry automatically. Failed records remain in `failed` status and will be
+  picked up on the next daily run.
+
+---
+
+## 8. Next Recommended Phase
+
+### Phase 7: Email Dashboard
+Display classified email metadata in a read-only dashboard UI —
+category, confidence, sender, subject, and received date — sourced
+directly from `zoho_email_metadata`. No email body display.
