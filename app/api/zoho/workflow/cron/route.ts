@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncEmails } from "@/lib/zoho/syncEmails";
 import { classifyEmails } from "@/lib/zoho/classifyEmails";
+import { acquireCronLock, releaseCronLock } from "@/lib/zoho/cronLock";
 
 export async function GET(req: NextRequest) {
   // ── Authorization ─────────────────────────────────────────────────────────
@@ -44,51 +45,64 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // ── Concurrency lock ──────────────────────────────────────────────────────
+
+  let locked = false;
+  try {
+    locked = await acquireCronLock();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown lock error";
+    console.error("[Zoho Cron] Lock acquisition failed:", message);
+    return NextResponse.json({ error: "Failed to acquire cron lock." }, { status: 500 });
+  }
+
+  if (!locked) {
+    console.log("[Zoho Cron] Skipped — another run is already active.");
+    return NextResponse.json({ message: "Skipped — another run is already active." }, { status: 200 });
+  }
+
   // ── Workflow ───────────────────────────────────────────────────────────────
 
   console.log("[Zoho Cron] Triggered — running sync + classification.");
 
-  // Step 1 — Sync latest email metadata from Zoho
-  let syncResult;
   try {
-    syncResult = await syncEmails();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown sync error";
-    console.error("[Zoho Cron] Sync step failed:", message);
-    const status =
-      message.includes("No active Zoho connection") ? 404
-      : message.includes("configuration is incomplete") ? 500
-      : 502;
-    return NextResponse.json(
-      { error: `Sync failed: ${message}` },
-      { status },
+    // Step 1 — Sync latest email metadata from Zoho
+    let syncResult;
+    try {
+      syncResult = await syncEmails();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown sync error";
+      console.error("[Zoho Cron] Sync step failed:", message);
+      const status =
+        message.includes("No active Zoho connection") ? 404
+        : message.includes("configuration is incomplete") ? 500
+        : 502;
+      return NextResponse.json({ error: `Sync failed: ${message}` }, { status });
+    }
+
+    // Step 2 — Classify any newly inserted or retryable-failed records
+    let classifyResult;
+    try {
+      classifyResult = await classifyEmails();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown classify error";
+      console.error("[Zoho Cron] Classification step failed:", message);
+      return NextResponse.json(
+        { message: "Sync succeeded but classification failed", sync: syncResult, classificationError: message },
+        { status: 502 },
+      );
+    }
+
+    console.log(
+      `[Zoho Cron] Complete — sync fetched: ${syncResult.fetched}, classify checked: ${classifyResult.checked}, classified: ${classifyResult.classified}`,
     );
+
+    return NextResponse.json({
+      message: "Sync and classification complete",
+      sync: syncResult,
+      classification: classifyResult,
+    });
+  } finally {
+    await releaseCronLock();
   }
-
-  // Step 2 — Classify any newly inserted or retryable-failed records
-  let classifyResult;
-  try {
-    classifyResult = await classifyEmails();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown classify error";
-    console.error("[Zoho Cron] Classification step failed:", message);
-    return NextResponse.json(
-      {
-        message: "Sync succeeded but classification failed",
-        sync: syncResult,
-        classificationError: message,
-      },
-      { status: 502 },
-    );
-  }
-
-  console.log(
-    `[Zoho Cron] Complete — sync fetched: ${syncResult.fetched}, classify checked: ${classifyResult.checked}, classified: ${classifyResult.classified}`,
-  );
-
-  return NextResponse.json({
-    message: "Sync and classification complete",
-    sync: syncResult,
-    classification: classifyResult,
-  });
 }
