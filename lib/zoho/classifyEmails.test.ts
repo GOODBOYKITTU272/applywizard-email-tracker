@@ -493,5 +493,21 @@ describe("Phase 3D dry-run and mailbox guardrails (decision logic)", () => {
       // And must NOT contain client_id assigned from a variable (mappingResult, etc.)
       expect(src).not.toMatch(/client_id:\s*mapping/);
     });
+
+    it("ZOHO_CLASSIFY_MAX_PER_RUN configures the pending query limit", () => {
+      const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
+      // Env var must be read
+      expect(src).toContain("ZOHO_CLASSIFY_MAX_PER_RUN");
+      // Variable must be used as the limit argument
+      expect(src).toMatch(/\.limit\(classifyMaxPerRun\)/);
+      // Default must be 50
+      expect(src).toContain('"50"');
+    });
+
+    it("ClassifyResult includes review_required field", () => {
+      const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
+      expect(src).toContain("review_required");
+      expect(src).toContain("reviewRequiredCount");
+    });
   });
 });

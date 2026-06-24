@@ -1,8 +1,8 @@
 /**
- * syncEmails — core Zoho mail metadata sync logic (Phase 5A).
+ * syncEmails — core Zoho mail metadata sync logic (Phase 5A / backlog-safe).
  *
- * Fetches the latest email metadata from Zoho Mail, upserts safe metadata
- * into zoho_email_metadata, and returns a typed summary.
+ * Fetches email metadata from Zoho Mail in paginated oldest-first order,
+ * upserts safe metadata into zoho_email_metadata, and returns a typed summary.
  *
  * Safe logging rule: never log access tokens, refresh tokens, or email bodies.
  * Only log boolean success/failure and counts.
@@ -37,6 +37,7 @@ export interface SyncResult {
   inserted: number;
   updated: number;
   skipped: number;
+  has_more: boolean;
 }
 
 // ── Token refresh helper ───────────────────────────────────────────────────────
@@ -111,8 +112,12 @@ async function refreshZohoToken(
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
- * Runs one sync cycle: fetches the latest 10 emails from Zoho Mail and
- * upserts their safe metadata into zoho_email_metadata.
+ * Runs one sync cycle: paginates oldest-first through the tracker inbox,
+ * upserts safe metadata into zoho_email_metadata, and stops at the per-run cap.
+ *
+ * Environment variables:
+ *   ZOHO_SYNC_PAGE_SIZE   — emails per Zoho API request (default 25, max 100)
+ *   ZOHO_SYNC_MAX_PER_RUN — total emails fetched per cron run (default 100, max 500)
  *
  * Throws on configuration or connection errors so the caller can surface
  * an appropriate HTTP response.
@@ -133,6 +138,11 @@ export async function syncEmails(): Promise<SyncResult> {
       "ZOHO_SYNC_MAILBOX is not configured. Set it to the exact tracker mailbox address.",
     );
   }
+
+  // ponytail: clamp page size 1–100; invalid/missing → 25
+  const pageSize = Math.min(100, Math.max(1, parseInt(process.env.ZOHO_SYNC_PAGE_SIZE ?? "25", 10) || 25));
+  // ponytail: clamp max per run 1–500; invalid/missing → 100
+  const maxPerRun = Math.min(500, Math.max(1, parseInt(process.env.ZOHO_SYNC_MAX_PER_RUN ?? "100", 10) || 100));
 
   const supabase = createSupabaseServerClient();
 
@@ -170,104 +180,126 @@ export async function syncEmails(): Promise<SyncResult> {
     );
   }
 
-  // Fetch latest emails from Zoho Mail
   const zohoAccountId: string = connection.zoho_account_id;
-  // ponytail: clamp 1–10; invalid/missing env → 10
-  const syncLimit = Math.min(10, Math.max(1, parseInt(process.env.ZOHO_SYNC_LIMIT ?? "10", 10) || 10));
-  const emailsUrl = `${mailBaseUrl}/accounts/${zohoAccountId}/messages/view?limit=${syncLimit}`;
-  console.log(
-    "[Zoho Sync] Fetching latest emails from:",
-    emailsUrl.replace(zohoAccountId, "ANONYMIZED_ID"),
-  );
 
-  const emailResponse = await fetch(emailsUrl, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `Zoho-oauthtoken ${accessToken}`,
-    },
-  });
+  // ── Paginated fetch loop (oldest-first) ──────────────────────────────────────
 
-  const parsedPayload = (await emailResponse.json()) as ZohoAPIResponse<ZohoEmailItem[]>;
+  let offset = 0;
+  let totalFetched = 0;
+  let totalInserted = 0;
+  let totalUpdated = 0;
+  let hasMore = false;
 
-  if (!emailResponse.ok || parsedPayload.status?.code !== 200) {
-    throw new Error(
-      `Zoho messages request failed: ${emailResponse.status} / ${parsedPayload.status?.description ?? "unknown"}`,
+  while (totalFetched < maxPerRun) {
+    // Never request more than remaining cap allows
+    const thisLimit = Math.min(pageSize, maxPerRun - totalFetched);
+    // sortorder=asc: oldest-first so backlog is processed before newer arrivals
+    const emailsUrl = `${mailBaseUrl}/accounts/${zohoAccountId}/messages/view?limit=${thisLimit}&start=${offset}&sortorder=asc`;
+
+    console.log(
+      `[Zoho Sync] Fetching page — limit: ${thisLimit}, start: ${offset}`,
     );
-  }
 
-  const messages = Array.isArray(parsedPayload.data) ? parsedPayload.data : [];
+    const emailResponse = await fetch(emailsUrl, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Zoho-oauthtoken ${accessToken}`,
+      },
+    });
 
-  if (messages.length === 0) {
-    return { fetched: 0, inserted: 0, updated: 0, skipped: 0 };
-  }
+    const parsedPayload = (await emailResponse.json()) as ZohoAPIResponse<ZohoEmailItem[]>;
 
-  // Determine which records already exist
-  const messageIds = messages.map((item) => item.messageId);
-  const { data: existingRecords, error: existingError } = await supabase
-    .from("zoho_email_metadata")
-    .select("message_id")
-    .eq("mailbox_email", connection.email_address)
-    .in("message_id", messageIds);
-
-  if (existingError) {
-    throw new Error(`Failed to query existing metadata: ${existingError.message}`);
-  }
-
-  const existingMsgIds = new Set(existingRecords?.map((r) => r.message_id) ?? []);
-
-  let insertedCount = 0;
-  let updatedCount = 0;
-  const nowTime = new Date().toISOString();
-
-  const upsertPayload = messages.map((item) => {
-    const receivedTime = Number(item.receivedTime);
-    const receivedAt = Number.isFinite(receivedTime)
-      ? new Date(receivedTime).toISOString()
-      : nowTime;
-    const hasAttachments =
-      item.hasAttachment === "1" ||
-      item.hasAttachment === 1 ||
-      Boolean(Number(item.hasAttachment));
-
-    if (existingMsgIds.has(item.messageId)) {
-      updatedCount++;
-    } else {
-      insertedCount++;
+    if (!emailResponse.ok || parsedPayload.status?.code !== 200) {
+      throw new Error(
+        `Zoho messages request failed: ${emailResponse.status} / ${parsedPayload.status?.description ?? "unknown"}`,
+      );
     }
 
-    return {
-      zoho_connection_id: connection.id,
-      mailbox_email: connection.email_address,
-      message_id: item.messageId,
-      sender: item.sender || item.fromAddress || "unknown",
-      subject: item.subject || "(No Subject)",
-      received_at: receivedAt,
-      folder_id: item.folderId || "unknown",
-      folder_name: item.folderName || "Inbox",
-      has_attachments: hasAttachments,
-      attachment_count: hasAttachments ? 1 : 0,
-      sync_status: "synced",
-      last_seen_at: nowTime,
-      updated_at: nowTime,
-    };
-  });
+    const messages = Array.isArray(parsedPayload.data) ? parsedPayload.data : [];
 
-  const { error: upsertError } = await supabase
-    .from("zoho_email_metadata")
-    .upsert(upsertPayload, { onConflict: "mailbox_email,message_id" });
+    if (messages.length === 0) break;
 
-  if (upsertError) {
-    throw new Error(`Failed to upsert email metadata: ${upsertError.message}`);
+    // Determine which records already exist (idempotency check)
+    const messageIds = messages.map((item) => item.messageId);
+    const { data: existingRecords, error: existingError } = await supabase
+      .from("zoho_email_metadata")
+      .select("message_id")
+      .eq("mailbox_email", connection.email_address)
+      .in("message_id", messageIds);
+
+    if (existingError) {
+      throw new Error(`Failed to query existing metadata: ${existingError.message}`);
+    }
+
+    const existingMsgIds = new Set(existingRecords?.map((r) => r.message_id) ?? []);
+    const nowTime = new Date().toISOString();
+
+    const upsertPayload = messages.map((item) => {
+      const receivedTime = Number(item.receivedTime);
+      const receivedAt = Number.isFinite(receivedTime)
+        ? new Date(receivedTime).toISOString()
+        : nowTime;
+      const hasAttachments =
+        item.hasAttachment === "1" ||
+        item.hasAttachment === 1 ||
+        Boolean(Number(item.hasAttachment));
+
+      if (existingMsgIds.has(item.messageId)) {
+        totalUpdated++;
+      } else {
+        totalInserted++;
+      }
+
+      return {
+        zoho_connection_id: connection.id,
+        mailbox_email: connection.email_address,
+        message_id: item.messageId,
+        sender: item.sender || item.fromAddress || "unknown",
+        subject: item.subject || "(No Subject)",
+        received_at: receivedAt,
+        folder_id: item.folderId || "unknown",
+        folder_name: item.folderName || "Inbox",
+        has_attachments: hasAttachments,
+        attachment_count: hasAttachments ? 1 : 0,
+        sync_status: "synced",
+        last_seen_at: nowTime,
+        updated_at: nowTime,
+      };
+    });
+
+    const { error: upsertError } = await supabase
+      .from("zoho_email_metadata")
+      .upsert(upsertPayload, { onConflict: "mailbox_email,message_id" });
+
+    if (upsertError) {
+      throw new Error(`Failed to upsert email metadata: ${upsertError.message}`);
+    }
+
+    totalFetched += messages.length;
+    offset += messages.length;
+
+    if (messages.length < thisLimit) {
+      // Fewer returned than requested — definitively at end of inbox
+      hasMore = false;
+      break;
+    }
+
+    if (totalFetched >= maxPerRun) {
+      // Hit the per-run cap — there may be more emails on next run
+      hasMore = true;
+      break;
+    }
   }
 
   console.log(
-    `[Zoho Sync] Complete — fetched: ${messages.length}, inserted: ${insertedCount}, updated: ${updatedCount}`,
+    `[Zoho Sync] Complete — fetched: ${totalFetched}, inserted: ${totalInserted}, updated: ${totalUpdated}, has_more: ${hasMore}`,
   );
 
   return {
-    fetched: messages.length,
-    inserted: insertedCount,
-    updated: updatedCount,
+    fetched: totalFetched,
+    inserted: totalInserted,
+    updated: totalUpdated,
     skipped: 0,
+    has_more: hasMore,
   };
 }

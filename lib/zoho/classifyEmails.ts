@@ -52,6 +52,7 @@ export interface ClassifyResult {
   classified: number;
   failed: number;
   skipped: number;
+  review_required: number;
 }
 
 export interface DryRunEntry {
@@ -439,14 +440,16 @@ export async function classifyEmails(
     );
   }
 
-  // Query up to 5 pending or retryable-failed records
+  // ponytail: clamp 1–200; invalid/missing → 50
+  const classifyMaxPerRun = Math.min(200, Math.max(1, parseInt(process.env.ZOHO_CLASSIFY_MAX_PER_RUN ?? "50", 10) || 50));
+
   const { data: pendingEmails, error: pendingError } = await supabase
     .from("zoho_email_metadata")
     .select("*")
     .eq("mailbox_email", connection.email_address)
     .in("classification_status", ["pending", "failed"])
-    .order("received_at", { ascending: false })
-    .limit(5);
+    .order("received_at", { ascending: true })
+    .limit(classifyMaxPerRun);
 
   if (pendingError) {
     throw new Error(`Failed to query pending emails: ${pendingError.message}`);
@@ -455,6 +458,7 @@ export async function classifyEmails(
   const checkedCount = pendingEmails?.length ?? 0;
   let classifiedCount = 0;
   let failedCount = 0;
+  let reviewRequiredCount = 0;
 
   const zohoAccountId: string = connection.zoho_account_id;
 
@@ -611,6 +615,7 @@ export async function classifyEmails(
         failedCount++;
       } else {
         classifiedCount++;
+        if (classification.needs_human_review) reviewRequiredCount++;
       }
     } catch (error) {
       console.error(
@@ -626,8 +631,8 @@ export async function classifyEmails(
   }
 
   console.log(
-    `[Zoho Classify] Complete — checked: ${checkedCount}, classified: ${classifiedCount}, failed: ${failedCount}`,
+    `[Zoho Classify] Complete — checked: ${checkedCount}, classified: ${classifiedCount}, failed: ${failedCount}, review_required: ${reviewRequiredCount}`,
   );
 
-  return { checked: checkedCount, classified: classifiedCount, failed: failedCount, skipped: 0 };
+  return { checked: checkedCount, classified: classifiedCount, failed: failedCount, skipped: 0, review_required: reviewRequiredCount };
 }

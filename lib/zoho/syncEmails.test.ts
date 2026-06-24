@@ -180,9 +180,9 @@ describe("syncEmails — ZOHO_SYNC_MAILBOX targeting", () => {
   });
 });
 
-// ── ZOHO_SYNC_LIMIT tests ─────────────────────────────────────────────────────
+// ── ZOHO_SYNC_PAGE_SIZE tests ─────────────────────────────────────────────────
 
-describe("syncEmails — ZOHO_SYNC_LIMIT", () => {
+describe("syncEmails — ZOHO_SYNC_PAGE_SIZE", () => {
   // Capture the URL passed to fetch so we can assert the limit parameter.
   let capturedUrl: string | null = null;
 
@@ -202,7 +202,6 @@ describe("syncEmails — ZOHO_SYNC_LIMIT", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedUrl = null;
-    // Default: valid connection always returned
     mockMailboxSingle.mockResolvedValue({ data: TRACKER_CONNECTION, error: null });
   });
 
@@ -213,63 +212,74 @@ describe("syncEmails — ZOHO_SYNC_LIMIT", () => {
     delete process.env.ZOHO_ACCOUNTS_BASE_URL;
     delete process.env.ZOHO_MAIL_BASE_URL;
     delete process.env.ZOHO_SYNC_MAILBOX;
-    delete process.env.ZOHO_SYNC_LIMIT;
+    delete process.env.ZOHO_SYNC_PAGE_SIZE;
+    delete process.env.ZOHO_SYNC_MAX_PER_RUN;
   });
 
-  it("ZOHO_SYNC_LIMIT=1 sends limit=1 to Zoho", async () => {
+  it("ZOHO_SYNC_PAGE_SIZE=5 sends limit=5 to Zoho", async () => {
     setEnvVars("tracker@applywizard.ai");
-    process.env.ZOHO_SYNC_LIMIT = "1";
+    process.env.ZOHO_SYNC_PAGE_SIZE = "5";
     stubFetchCapture();
 
     const { syncEmails } = await import("./syncEmails");
     await syncEmails();
 
-    expect(capturedUrl).toContain("limit=1");
+    expect(capturedUrl).toContain("limit=5");
   });
 
-  it("missing ZOHO_SYNC_LIMIT defaults to limit=10", async () => {
+  it("missing ZOHO_SYNC_PAGE_SIZE defaults to limit=25", async () => {
     setEnvVars("tracker@applywizard.ai");
-    delete process.env.ZOHO_SYNC_LIMIT;
+    delete process.env.ZOHO_SYNC_PAGE_SIZE;
     stubFetchCapture();
 
     const { syncEmails } = await import("./syncEmails");
     await syncEmails();
 
-    expect(capturedUrl).toContain("limit=10");
+    expect(capturedUrl).toContain("limit=25");
   });
 
-  it("invalid ZOHO_SYNC_LIMIT (non-numeric string) defaults to limit=10", async () => {
+  it("invalid ZOHO_SYNC_PAGE_SIZE (non-numeric string) defaults to limit=25", async () => {
     setEnvVars("tracker@applywizard.ai");
-    process.env.ZOHO_SYNC_LIMIT = "abc";
+    process.env.ZOHO_SYNC_PAGE_SIZE = "abc";
     stubFetchCapture();
 
     const { syncEmails } = await import("./syncEmails");
     await syncEmails();
 
-    expect(capturedUrl).toContain("limit=10");
+    expect(capturedUrl).toContain("limit=25");
   });
 
-  it("ZOHO_SYNC_LIMIT above 10 is capped at limit=10", async () => {
+  it("ZOHO_SYNC_PAGE_SIZE above 100 is capped at limit=100", async () => {
     setEnvVars("tracker@applywizard.ai");
-    process.env.ZOHO_SYNC_LIMIT = "99";
+    process.env.ZOHO_SYNC_PAGE_SIZE = "999";
     stubFetchCapture();
 
     const { syncEmails } = await import("./syncEmails");
     await syncEmails();
 
-    expect(capturedUrl).toContain("limit=10");
-    expect(capturedUrl).not.toContain("limit=99");
+    expect(capturedUrl).toContain("limit=100");
+    expect(capturedUrl).not.toContain("limit=999");
   });
 
-  it("ZOHO_SYNC_LIMIT below 1 (zero) is floored to limit=1", async () => {
-    // parseInt("0") = 0; Math.max(1, 0) = 1 → sends limit=1
+  it("ZOHO_SYNC_PAGE_SIZE=0 is invalid and falls back to default limit=25", async () => {
+    // parseInt("0") = 0; 0 || 25 = 25 (falsy zero treated as missing)
     setEnvVars("tracker@applywizard.ai");
-    process.env.ZOHO_SYNC_LIMIT = "0";
+    process.env.ZOHO_SYNC_PAGE_SIZE = "0";
     stubFetchCapture();
 
     const { syncEmails } = await import("./syncEmails");
     await syncEmails();
 
-    expect(capturedUrl).toContain("limit=1");
+    expect(capturedUrl).toContain("limit=25");
+  });
+
+  it("URL includes sortorder=asc for oldest-first processing", async () => {
+    setEnvVars("tracker@applywizard.ai");
+    stubFetchCapture();
+
+    const { syncEmails } = await import("./syncEmails");
+    await syncEmails();
+
+    expect(capturedUrl).toContain("sortorder=asc");
   });
 });
