@@ -1,673 +1,257 @@
-"use client";
+import Link from "next/link";
 
-import React, { useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
-import { mockClients, mockCAs } from "@/lib/mockData";
-import {
-  IconClients,
-  IconMailboxes,
-  IconCheck,
-  IconMail,
-  IconApplications,
-  IconWarning,
-  IconSearch,
-} from "@/components/icons";
+import { CooBadge, EmptyState, MetricCard, SectionBlock } from "@/components/coo";
+import { getClientsWorkspaceData } from "@/lib/zoho/cooWorkspace";
 
-export default function ClientsPage() {
-  const router = useRouter();
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-  // ── States ──────────────────────────────────────────────────────────────────
-  const [searchTerm, setSearchTerm] = useState("");
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-  // ── Computed Top Summary Metrics ──────────────────────────────────────────
-  const allClientsCount = mockClients.length;
-  const connectedMailboxesCount = mockClients.filter(
-    (c) => c.mailboxStatus === "Active" || c.mailboxStatus === "Needs Connection"
-  ).length;
-  const activeMailboxesCount = mockClients.filter(
-    (c) => c.mailboxStatus === "Active"
-  ).length;
-  const totalEmailsToday = mockClients.reduce((sum, c) => sum + c.emailsToday, 0);
-  const totalPendingClassification = mockClients.reduce(
-    (sum, c) => sum + c.pendingClassification, 0
-  );
-  const totalReviewRequired = mockClients.reduce(
-    (sum, c) => sum + c.reviewRequired, 0
-  );
+const DATE_PRESETS = [
+  { label: "Today", value: "today" },
+  { label: "Yesterday", value: "yesterday" },
+  { label: "Last 7 Days", value: "last_7_days" },
+  { label: "Last 30 Days", value: "last_30_days" },
+  { label: "Custom Range", value: "custom" },
+] as const;
 
-  // ── Filter Clients ──────────────────────────────────────────────────────────
-  const filteredClients = useMemo(() => {
-    return mockClients.filter((client) => {
-      return (
-        searchTerm === "" ||
-        client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        client.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        client.mailbox.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        client.caName.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    });
-  }, [searchTerm]);
+const STAGE_PRESETS = [
+  { label: "All", value: "all" },
+  { label: "Awaiting Classification", value: "awaiting_classification" },
+  { label: "Classified Activity", value: "classified_activity" },
+] as const;
+
+const URGENCY_PRESETS = [
+  { label: "All", value: "all" },
+  { label: "Offers", value: "offers" },
+  { label: "Interviews", value: "interviews" },
+  { label: "Assessments", value: "assessments" },
+  { label: "Review Needed", value: "review_needed" },
+] as const;
+
+const QUEUE_PRESETS = [
+  { label: "All", value: "all" },
+  { label: "Pending", value: "pending" },
+  { label: "Processing", value: "processing" },
+  { label: "Retry Scheduled", value: "retry_scheduled" },
+  { label: "Review", value: "review" },
+  { label: "Dead Letter", value: "dead_letter" },
+] as const;
+
+function valueFrom(param: string | string[] | undefined): string | null {
+  if (Array.isArray(param)) return param[0] ?? null;
+  return param ?? null;
+}
+
+function buildUrl(
+  current: URLSearchParams,
+  updates: Record<string, string | null | undefined>,
+): string {
+  const next = new URLSearchParams(current.toString());
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === null || value === undefined || value === "") next.delete(key);
+    else next.set(key, value);
+  }
+  const query = next.toString();
+  return query ? `/clients?${query}` : "/clients";
+}
+
+function toneForUrgency(value: string): "offer" | "interview" | "assessment" | "review" | "neutral" {
+  if (value === "offer") return "offer";
+  if (value === "interview") return "interview";
+  if (value === "assessment") return "assessment";
+  if (value === "review required") return "review";
+  return "neutral";
+}
+
+function toneForQueue(value: string): "success" | "warning" | "critical" | "neutral" | "review" {
+  if (value === "Dead Letter") return "critical";
+  if (value === "Review Queue") return "review";
+  if (value === "Retrying" || value === "Pending") return "warning";
+  if (value === "Processing") return "neutral";
+  return "success";
+}
+
+export default async function ClientsPage({ searchParams }: { searchParams: SearchParams }) {
+  const params = await searchParams;
+  const current = new URLSearchParams();
+  const range = valueFrom(params.range) ?? "today";
+  const stage = valueFrom(params.stage) ?? "all";
+  const urgency = valueFrom(params.urgency) ?? "all";
+  const queue = valueFrom(params.queue) ?? "all";
+  const q = valueFrom(params.q) ?? "";
+  const from = valueFrom(params.from);
+  const to = valueFrom(params.to);
+
+  for (const [key, value] of Object.entries({ range, stage, urgency, queue, q, from, to })) {
+    if (value) current.set(key, value);
+  }
+
+  const data = await getClientsWorkspaceData({
+    range,
+    stage,
+    urgency,
+    queue,
+    q,
+    from,
+    to,
+  });
+
+  const totalClients = data.rows.length;
+  const urgentClients = data.rows.filter((row) => row.urgency !== "other").length;
+  const reviewClients = data.rows.filter((row) => row.reviewCount > 0).length;
+  const deadLetterClients = data.rows.filter((row) => row.deadLetterCount > 0).length;
 
   return (
-    <div className="clients-page-container">
-      {/* Header bar */}
-      <header className="page-header">
+    <main className="coo-page coo-clients-page">
+      <header className="coo-page__header">
         <div>
-          <h1 className="page-title">Clients & Mailboxes</h1>
-          <p className="page-subtitle">
-            Configure applicant client profiles, connect mailboxes, and track advisor assignments.
+          <span className="coo-page__eyebrow">Clients</span>
+          <h1 className="coo-page__title">Client-Centric Operations List</h1>
+          <p className="coo-page__subtitle">
+            Temporary identity is original_recipient until Leads API mapping exists.
           </p>
         </div>
-        {/* Add Client Mailbox connection is hidden in current phase */}
+        <div className="coo-page__meta">
+          <CooBadge label={data.dateRange.label} tone="neutral" />
+          <CooBadge label={data.rows.length ? `${data.rows.length} rows` : "No rows"} tone={data.rows.length ? "success" : "neutral"} />
+        </div>
       </header>
 
-      {/* ── Summary Metrics Row ── */}
-      <section className="metrics-grid">
-        <div className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconClients size={16} />
-            </span>
-            <span className="metric-title">All Clients</span>
-          </div>
-          <div className="metric-value">{allClientsCount}</div>
-          <div className="metric-trend text-muted">Registered profiles</div>
+      <section className="coo-toolbar" aria-label="Client filters">
+        <div className="coo-toolbar__group" role="tablist" aria-label="Date ranges">
+          {DATE_PRESETS.map((preset) => (
+            <Link key={preset.value} href={buildUrl(current, { range: preset.value })} className={`coo-filter-link ${range === preset.value ? "active" : ""}`}>
+              {preset.label}
+            </Link>
+          ))}
+        </div>
+        <div className="coo-toolbar__group" role="tablist" aria-label="Stage filters">
+          {STAGE_PRESETS.map((preset) => (
+            <Link key={preset.value} href={buildUrl(current, { stage: preset.value })} className={`coo-filter-link ${stage === preset.value ? "active" : ""}`}>
+              {preset.label}
+            </Link>
+          ))}
+        </div>
+        <div className="coo-toolbar__group" role="tablist" aria-label="Urgency filters">
+          {URGENCY_PRESETS.map((preset) => (
+            <Link key={preset.value} href={buildUrl(current, { urgency: preset.value })} className={`coo-filter-link ${urgency === preset.value ? "active" : ""}`}>
+              {preset.label}
+            </Link>
+          ))}
+        </div>
+        <div className="coo-toolbar__group" role="tablist" aria-label="Queue filters">
+          {QUEUE_PRESETS.map((preset) => (
+            <Link key={preset.value} href={buildUrl(current, { queue: preset.value })} className={`coo-filter-link ${queue === preset.value ? "active" : ""}`}>
+              {preset.label}
+            </Link>
+          ))}
         </div>
 
-        <div className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconMailboxes size={16} />
-            </span>
-            <span className="metric-title">Connected</span>
-          </div>
-          <div className="metric-value">{connectedMailboxesCount}</div>
-          <div className="metric-trend text-muted">Zoho integrations</div>
-        </div>
-
-        <div className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconCheck size={16} />
-            </span>
-            <span className="metric-title">Active</span>
-          </div>
-          <div className="metric-value">{activeMailboxesCount}</div>
-          <div className="metric-trend text-success">Healthy feeds</div>
-        </div>
-
-        <div className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconMail size={16} />
-            </span>
-            <span className="metric-title">Emails Today</span>
-          </div>
-          <div className="metric-value">{totalEmailsToday}</div>
-          <div className="metric-trend text-muted">Processed headers</div>
-        </div>
-
-        <div className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconApplications size={16} />
-            </span>
-            <span className="metric-title">Pending Class.</span>
-          </div>
-          <div className="metric-value">{totalPendingClassification}</div>
-          <div className="metric-trend text-pending">AI queue</div>
-        </div>
-
-        <div className="metric-card highlight-urgent">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconWarning size={16} />
-            </span>
-            <span className="metric-title">Review Required</span>
-          </div>
-          <div className="metric-value text-urgent">{totalReviewRequired}</div>
-          <div className="metric-trend text-urgent font-bold">Needs CA action</div>
-        </div>
+        <form className="coo-search-form" action="/clients" method="get">
+          <input type="hidden" name="range" value={range} />
+          <input type="hidden" name="stage" value={stage} />
+          <input type="hidden" name="urgency" value={urgency} />
+          <input type="hidden" name="queue" value={queue} />
+          <input type="hidden" name="from" value={from ?? ""} />
+          <input type="hidden" name="to" value={to ?? ""} />
+          <label>
+            <span>Search client identity</span>
+            <input type="search" name="q" defaultValue={q} placeholder="Search original_recipient..." />
+          </label>
+          <button type="submit" className="coo-action-button">Search</button>
+        </form>
       </section>
 
-      {/* Search control */}
-      <section className="search-card">
-        <span className="search-icon">
-          <IconSearch size={18} />
-        </span>
-        <input
-          type="text"
-          placeholder="Search by client name, email, Zoho mailbox, assigned CA..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
-      </section>
+      <SectionBlock title="Client Summary" subtitle="Overview of the selected client window.">
+        <div className="coo-metric-grid coo-metric-grid--clients">
+          <MetricCard label="Clients" value={totalClients} hint="Grouped by original_recipient" tone="neutral" />
+          <MetricCard label="Urgent Clients" value={urgentClients} hint="Offers, interviews, assessments, review" tone="offer" />
+          <MetricCard label="Review Needed" value={reviewClients} hint="Rows with human review" tone="review" />
+          <MetricCard label="Dead Letter Clients" value={deadLetterClients} hint="Visible in queue filters" tone="critical" />
+        </div>
+      </SectionBlock>
 
-      {/* Clients Data Results */}
-      <section className="clients-list-container">
-        {filteredClients.length === 0 ? (
-          <div className="empty-results-box">
-            <div className="empty-icon">
-              <IconClients size={48} style={{ margin: "0 auto 12px" }} />
-            </div>
-            <h3>No Clients Found</h3>
-            <p>No client records match your current search queries.</p>
-          </div>
+      <SectionBlock
+        title="Clients & Mailboxes"
+        subtitle="Client identity, live activity, and queue status without exposing tracker@applywizard.ai."
+      >
+        {!data.rows.length ? (
+          <EmptyState title="No clients found." description="Try widening the date range or clearing filters." />
         ) : (
           <>
-            {/* Desktop Table view */}
-            <div className="table-card">
-              <table className="ops-table">
+            <div className="coo-table-card">
+              <table className="coo-table coo-table--clients">
                 <thead>
                   <tr>
-                    <th>Client Name / Email</th>
-                    <th>Zoho Mailbox</th>
-                    <th>Mailbox Status</th>
-                    <th>Assigned CA</th>
-                    <th>Emails Today</th>
-                    <th>Pending Class.</th>
-                    <th>Review Req.</th>
-                    <th>Actions</th>
+                    <th>Client Identity</th>
+                    <th>Total Emails</th>
+                    <th>New Emails</th>
+                    <th>Latest Meaningful Update</th>
+                    <th>Interviews</th>
+                    <th>Assessments</th>
+                    <th>Offers</th>
+                    <th>Rejections</th>
+                    <th>Review Count</th>
+                    <th>Queue State</th>
+                    <th>Urgency</th>
+                    <th>Open</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredClients.map((client) => (
-                    <tr key={client.id} className="table-row-hover">
-                      <td>
-                        <div className="client-name font-semibold">{client.name}</div>
-                        <div className="client-email">{client.email}</div>
+                  {data.rows.map((row) => (
+                    <tr key={row.clientKey}>
+                      <td className="coo-client-cell">
+                        <Link href={`/clients/${row.clientKey}`} className="coo-client-link">{row.originalRecipient}</Link>
+                        <span className="coo-client-note">Client name available after Leads mapping</span>
                       </td>
-                      <td className="font-semibold">{client.mailbox}</td>
-                      <td>
-                        <span
-                          className={`status-pill ${
-                            client.mailboxStatus === "Active"
-                              ? "healthy"
-                              : "needs_reconnect"
-                          }`}
-                        >
-                          {client.mailboxStatus}
-                        </span>
+                      <td>{row.totalEmails}</td>
+                      <td>{row.newEmails}</td>
+                      <td className="coo-update-cell">
+                        <span>{row.latestUpdateLabel}</span>
+                        {row.latestMeaningfulDeadline ? <span className="coo-update-note">Deadline: {row.latestMeaningfulDeadline}</span> : null}
                       </td>
-                      <td>{client.caName}</td>
-                      <td className="font-tabular">{client.emailsToday}</td>
-                      <td className="font-tabular">{client.pendingClassification}</td>
-                      <td className="font-tabular font-bold text-urgent">
-                        {client.reviewRequired}
-                      </td>
-                      <td>
-                        <button
-                          className="action-btn"
-                          onClick={() => router.push(`/clients/${client.id}`)}
-                        >
-                          Open Dashboard
-                        </button>
-                      </td>
+                      <td>{row.interviews}</td>
+                      <td>{row.assessments}</td>
+                      <td className="coo-highlight">{row.offers}</td>
+                      <td>{row.rejections}</td>
+                      <td>{row.reviewCount}</td>
+                      <td><CooBadge label={row.queueState} tone={toneForQueue(row.queueState)} /></td>
+                      <td><CooBadge label={row.urgency} tone={toneForUrgency(row.urgency)} /></td>
+                      <td><Link href={`/clients/${row.clientKey}`} className="coo-inline-link">Open</Link></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
 
-            {/* Mobile Cards view */}
-            <div className="mobile-cards-list">
-              {filteredClients.map((client) => (
-                <div key={client.id} className="mobile-client-card">
-                  <div className="card-top-row">
+            <div className="coo-mobile-grid">
+              {data.rows.map((row) => (
+                <Link key={row.clientKey} href={`/clients/${row.clientKey}`} className="coo-mobile-card">
+                  <div className="coo-mobile-card__top">
                     <div>
-                      <div className="m-client-name">{client.name}</div>
-                      <div className="m-client-email">{client.email}</div>
+                      <div className="coo-mobile-card__title">{row.originalRecipient}</div>
+                      <div className="coo-mobile-card__subtitle">{row.latestUpdateLabel}</div>
                     </div>
-                    <span
-                      className={`status-pill ${
-                        client.mailboxStatus === "Active"
-                          ? "healthy"
-                          : "needs_reconnect"
-                      }`}
-                    >
-                      {client.mailboxStatus}
-                    </span>
-                  </div>
-
-                  <div className="card-mid-details">
-                    <div className="m-detail-row">
-                      <span>Mailbox:</span>
-                      <strong>{client.mailbox}</strong>
-                    </div>
-                    <div className="m-detail-row">
-                      <span>Advisor:</span>
-                      <strong>{client.caName}</strong>
+                    <div className="coo-chip-stack">
+                      <CooBadge label={row.queueState} tone={toneForQueue(row.queueState)} />
+                      <CooBadge label={row.urgency} tone={toneForUrgency(row.urgency)} />
                     </div>
                   </div>
-
-                  <div className="card-bottom-counts">
-                    <div className="count-badge">
-                      <span>Today:</span> <strong>{client.emailsToday}</strong>
-                    </div>
-                    <div className="count-badge">
-                      <span>Pending:</span> <strong>{client.pendingClassification}</strong>
-                    </div>
-                    <div className="count-badge urgent-badge">
-                      <span>Review:</span> <strong>{client.reviewRequired}</strong>
-                    </div>
+                  <div className="coo-mobile-card__stats">
+                    <span>Total {row.totalEmails}</span>
+                    <span>New {row.newEmails}</span>
+                    <span>Interviews {row.interviews}</span>
+                    <span>Offers {row.offers}</span>
                   </div>
-
-                  <div className="card-actions-panel">
-                    <button
-                      className="btn btn-secondary btn-full"
-                      onClick={() => router.push(`/clients/${client.id}`)}
-                    >
-                      Open Client Dashboard
-                    </button>
-                  </div>
-                </div>
+                </Link>
               ))}
             </div>
           </>
         )}
-      </section>
+      </SectionBlock>
 
-      <style jsx>{`
-        .clients-page-container {
-          display: flex;
-          flex-direction: column;
-          gap: 24px;
-        }
-
-        .page-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          flex-wrap: wrap;
-          gap: 16px;
-        }
-
-        .page-title {
-          font-family: var(--font-brand);
-          font-size: 1.85rem;
-          font-weight: 700;
-          color: var(--text-dark);
-          letter-spacing: -0.5px;
-        }
-
-        .page-subtitle {
-          color: var(--text-muted);
-          font-size: 0.95rem;
-          margin-top: 4px;
-        }
-
-        /* ── Summary Cards Grid ── */
-        .metrics-grid {
-          display: grid;
-          grid-template-columns: repeat(6, 1fr);
-          gap: 16px;
-        }
-
-        .metric-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 16px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          box-shadow: var(--card-shadow);
-        }
-
-        .metric-meta {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          color: var(--text-muted);
-          font-size: 0.8125rem;
-          font-weight: 600;
-        }
-
-        .metric-icon {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          color: var(--text-muted);
-        }
-
-        .metric-value {
-          font-size: 1.5rem;
-          font-weight: 700;
-          color: var(--text-dark);
-        }
-
-        .metric-trend {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-        }
-
-        .text-success {
-          color: var(--success-green-text) !important;
-        }
-
-        .text-pending {
-          color: var(--pending-orange) !important;
-        }
-
-        .text-urgent {
-          color: var(--urgent-red) !important;
-        }
-
-        .highlight-urgent {
-          border-color: var(--urgent-red);
-          background-color: var(--urgent-red-bg);
-        }
-
-        /* ── Search Bar ── */
-        .search-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 16px 24px;
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          box-shadow: var(--card-shadow);
-        }
-
-        .search-icon {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          color: var(--text-light);
-        }
-
-        .search-card input {
-          border: none;
-          background: none;
-          outline: none;
-          width: 100%;
-          color: var(--text-dark);
-          font-size: 0.925rem;
-          font-family: var(--font-display);
-        }
-
-        /* ── Results List ── */
-        .clients-list-container {
-          width: 100%;
-        }
-
-        .table-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          box-shadow: var(--card-shadow);
-          overflow: hidden;
-        }
-
-        .ops-table {
-          width: 100%;
-          border-collapse: collapse;
-          text-align: left;
-          font-size: 0.875rem;
-        }
-
-        .ops-table th {
-          padding: 14px 20px;
-          color: var(--text-muted);
-          font-weight: 600;
-          border-bottom: 1px solid var(--border-gray);
-          background-color: rgba(248, 250, 252, 0.5);
-        }
-
-        .ops-table td {
-          padding: 16px 20px;
-          border-bottom: 1px solid var(--border-gray);
-          vertical-align: middle;
-        }
-
-        .table-row-hover:hover {
-          background-color: var(--workspace-bg);
-        }
-
-        .client-email {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-          margin-top: 2px;
-        }
-
-        .font-semibold {
-          font-weight: 600;
-        }
-
-        .font-bold {
-          font-weight: 700;
-        }
-
-        .font-tabular {
-          font-feature-settings: "tnum";
-        }
-
-        /* Badges & Pills */
-        .status-pill {
-          display: inline-flex;
-          padding: 2px 8px;
-          border-radius: 9999px;
-          font-size: 0.75rem;
-          font-weight: 600;
-        }
-
-        .status-pill.healthy {
-          background-color: var(--success-green-bg);
-          color: var(--success-green-text);
-        }
-
-        .status-pill.needs_reconnect {
-          background-color: var(--pending-orange-bg);
-          color: var(--pending-orange);
-        }
-
-        .action-btn {
-          background: none;
-          border: none;
-          color: var(--primary-blue);
-          font-weight: 600;
-          cursor: pointer;
-          font-size: 0.875rem;
-        }
-
-        .action-btn:hover {
-          text-decoration: underline;
-        }
-
-        /* Reusable button styling */
-        .btn {
-          padding: 10px 20px;
-          font-size: 0.875rem;
-          font-weight: 600;
-          border-radius: 9999px;
-          border: none;
-          cursor: pointer;
-          transition: background-color 0.2s;
-        }
-
-        .btn-secondary {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          color: var(--text-dark);
-        }
-
-        .btn-secondary:hover {
-          background-color: var(--workspace-bg);
-        }
-
-        .btn-full {
-          width: 100%;
-          display: flex;
-          justify-content: center;
-        }
-
-        /* Reusable empty results */
-        .empty-results-box {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 48px;
-          text-align: center;
-          box-shadow: var(--card-shadow);
-        }
-
-        .empty-icon {
-          display: flex;
-          justify-content: center;
-          margin-bottom: 12px;
-          color: var(--text-light);
-        }
-
-        .empty-results-box h3 {
-          font-size: 1.25rem;
-          font-weight: 700;
-        }
-
-        .empty-results-box p {
-          color: var(--text-muted);
-          font-size: 0.925rem;
-          margin-top: 8px;
-        }
-
-        .mobile-cards-list {
-          display: none;
-        }
-
-        /* ── Responsive Rules ── */
-        @media (max-width: 1200px) {
-          .metrics-grid {
-            grid-template-columns: repeat(3, 1fr);
-            gap: 12px;
-          }
-        }
-
-        @media (max-width: 1023px) {
-          .ops-table th:nth-child(5),
-          .ops-table td:nth-child(5),
-          .ops-table th:nth-child(6),
-          .ops-table td:nth-child(6) {
-            display: none; /* Hide secondary counts on tablet */
-          }
-        }
-
-        @media (max-width: 767px) {
-          .page-header {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-
-          .metrics-grid {
-            grid-template-columns: repeat(2, 1fr);
-            gap: 10px;
-          }
-
-          .metric-value {
-            font-size: 1.25rem;
-          }
-
-          .table-card {
-            display: none;
-          }
-
-          .mobile-cards-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-          }
-
-          .mobile-client-card {
-            background-color: var(--white);
-            border: 1px solid var(--border-gray);
-            border-radius: 12px;
-            padding: 16px;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            box-shadow: var(--card-shadow);
-          }
-
-          .card-top-row {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-          }
-
-          .card-top-row > div:first-child {
-            min-width: 0;
-            flex: 1;
-          }
-
-          .m-client-name {
-            font-weight: 700;
-            font-size: 0.875rem;
-          }
-
-          .m-client-email {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            margin-top: 2px;
-            word-break: break-all;
-            overflow-wrap: break-word;
-          }
-
-          .card-mid-details {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            font-size: 0.8125rem;
-          }
-
-          .m-detail-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-          }
-
-          .m-detail-row span {
-            color: var(--text-muted);
-            flex-shrink: 0;
-          }
-
-          .m-detail-row strong {
-            word-break: break-all;
-            overflow-wrap: break-word;
-            text-align: right;
-          }
-
-          .card-bottom-counts {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            border-top: 1px dashed var(--border-gray);
-            padding-top: 10px;
-          }
-
-          .count-badge {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            background-color: var(--workspace-bg);
-            padding: 4px 8px;
-            border-radius: 6px;
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-          }
-
-          .count-badge.urgent-badge {
-            background-color: var(--urgent-red-bg);
-            color: var(--urgent-red);
-          }
-
-          .card-actions-panel {
-            margin-top: 4px;
-          }
-        }
-      `}</style>
-    </div>
+    </main>
   );
 }

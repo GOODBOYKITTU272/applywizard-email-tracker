@@ -1,36 +1,50 @@
 import Link from "next/link";
 
-import {
-  formatBacklogAge,
-  getOverviewDashboardData,
-} from "@/lib/zoho/cooOverview";
+import { CooBadge, EmptyState, MetricCard, SectionBlock } from "@/components/coo";
+import { getOverviewWorkspaceData } from "@/lib/zoho/cooWorkspace";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-type MetricCardProps = {
-  label: string;
-  value: number | string;
-  hint: string;
-  accent?: "offer" | "interview" | "review" | "neutral";
-};
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-type SystemCardProps = {
-  label: string;
-  value: string | number;
-  hint?: string;
-  tone?: "neutral" | "warning" | "critical" | "success" | "review";
-  badge?: string;
-};
+const DATE_PRESETS = [
+  { label: "Today", value: "today" },
+  { label: "Yesterday", value: "yesterday" },
+  { label: "Last 7 Days", value: "last_7_days" },
+  { label: "Last 30 Days", value: "last_30_days" },
+  { label: "Custom Range", value: "custom" },
+] as const;
 
-function formatDateLabel(date: Date): string {
-  return new Intl.DateTimeFormat("en-IN", {
-    dateStyle: "full",
-    timeZone: "Asia/Kolkata",
-  }).format(date);
+const STAGE_PRESETS = [
+  { label: "All", value: "all" },
+  { label: "Awaiting Classification", value: "awaiting_classification" },
+  { label: "Classified Activity", value: "classified_activity" },
+] as const;
+
+function valueFrom(param: string | string[] | undefined): string | null {
+  if (Array.isArray(param)) return param[0] ?? null;
+  return param ?? null;
 }
 
-function formatReceivedAt(value: string): string {
+function buildUrl(
+  current: URLSearchParams,
+  updates: Record<string, string | null | undefined>,
+): string {
+  const next = new URLSearchParams(current.toString());
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === null || value === undefined || value === "") {
+      next.delete(key);
+      continue;
+    }
+    next.set(key, value);
+  }
+  const query = next.toString();
+  return query ? `/overview?${query}` : "/overview";
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) return "Not available yet";
   return new Intl.DateTimeFormat("en-IN", {
     dateStyle: "medium",
     timeStyle: "short",
@@ -48,636 +62,328 @@ function formatDeadline(value: string | null): string | null {
   }).format(parsed);
 }
 
-function MetricCard({ label, value, hint, accent = "neutral" }: MetricCardProps) {
-  return (
-    <article className={`metric-card metric-card--${accent}`}>
-      <div className="metric-copy">
-        <span className="metric-label">{label}</span>
-        <strong className="metric-value">{value}</strong>
-      </div>
-      <p className="metric-hint">{hint}</p>
-    </article>
-  );
+function toneForCategory(category: string | null): "offer" | "interview" | "assessment" | "review" | "neutral" {
+  if (category === "job_offer") return "offer";
+  if (category === "interview_invite") return "interview";
+  if (category === "assessment") return "assessment";
+  if (category === "review" || category === "unknown") return "review";
+  return "neutral";
 }
 
-function SystemCard({ label, value, hint, tone = "neutral", badge }: SystemCardProps) {
-  return (
-    <article className={`system-card system-card--${tone}`}>
-      <div className="system-card-top">
-        <span className="system-label">{label}</span>
-        {badge ? <span className="system-badge">{badge}</span> : null}
-      </div>
-      <strong className="system-value">{value}</strong>
-      {hint ? <p className="system-hint">{hint}</p> : null}
-    </article>
-  );
+function toneForQueue(queueStatus: string | null): "success" | "warning" | "critical" | "neutral" | "review" {
+  if (queueStatus === "review") return "review";
+  if (queueStatus === "dead_letter") return "critical";
+  if (queueStatus === "retry_scheduled") return "warning";
+  if (queueStatus === "pending") return "warning";
+  if (queueStatus === "processing") return "neutral";
+  return "success";
 }
 
-function Badge({
-  label,
-  tone = "neutral",
-}: {
-  label: string;
-  tone?: "neutral" | "success" | "warning" | "critical" | "review" | "category";
-}) {
-  return <span className={`overview-badge overview-badge--${tone}`}>{label}</span>;
+function toneForQueueState(value: string): "success" | "warning" | "critical" | "neutral" | "review" {
+  if (value === "Dead Letter") return "critical";
+  if (value === "Review Queue") return "review";
+  if (value === "Retrying" || value === "Pending") return "warning";
+  if (value === "Processing") return "neutral";
+  return "success";
 }
 
-export default async function OverviewPage() {
-  const now = new Date();
-  const data = await getOverviewDashboardData({ now });
-  const dateLabel = formatDateLabel(now);
+export default async function OverviewPage({ searchParams }: { searchParams: SearchParams }) {
+  const params = await searchParams;
+  const current = new URLSearchParams();
+  const range = valueFrom(params.range) ?? "today";
+  const stage = valueFrom(params.stage) ?? "all";
+  const deadline = valueFrom(params.deadline) ?? null;
+  const from = valueFrom(params.from);
+  const to = valueFrom(params.to);
 
-  const hasImportantActivity = data.importantActivity.length > 0;
-  const hasNoTodayEmails = data.metrics.emailsReceivedToday === 0;
-  const hasNoReviewItems = data.queue.review === 0;
-  const hasCheckpoint = Boolean(data.queue.latestSuccessfulIngestAt);
+  for (const [key, value] of Object.entries({
+    range,
+    stage,
+    deadline,
+    from,
+    to,
+  })) {
+    if (value) current.set(key, value);
+  }
+
+  const data = await getOverviewWorkspaceData({
+    range,
+    stage,
+    deadlineTomorrowOnly: deadline === "tomorrow",
+    from,
+    to,
+  });
+
+  const latestIngest = formatDateTime(data.metrics.latestSuccessfulIngestAt);
+  const hasRows = data.clientRows.length > 0;
+  const hasActivity = data.activityRows.length > 0;
 
   return (
-    <main className="overview-shell">
-      <header className="overview-header">
-        <div className="header-copy">
-          <span className="eyebrow">Live COO Overview</span>
-          <h1>Operations Overview</h1>
-          <p>Live email intake and client activity</p>
+    <main className="coo-page coo-overview-page">
+      <header className="coo-page__header">
+        <div>
+          <span className="coo-page__eyebrow">Operations Overview</span>
+          <h1 className="coo-page__title">Master COO Email Tracking</h1>
+          <p className="coo-page__subtitle">
+            Client-first live tracking before and after classification.
+          </p>
         </div>
-        <div className="header-meta">
-          <div className="header-date">{dateLabel}</div>
-          <div className="header-chip-row">
-            <Badge label={`${data.metrics.classifiedToday} classified today`} tone="success" />
-            <Badge label={`${data.queue.review} in review`} tone="review" />
-          </div>
+        <div className="coo-page__meta">
+          <CooBadge label={`Latest ingest: ${latestIngest}`} tone={data.metrics.latestSuccessfulIngestAt ? "success" : "neutral"} />
+          <CooBadge label={data.dateRange.label} tone="neutral" />
+          <CooBadge label={data.stageFilter === "all" ? "All stages" : data.stageFilter.replace("_", " ")} tone="neutral" />
+          {data.deadlineTomorrowOnly ? <CooBadge label="Deadline tomorrow" tone="warning" /> : null}
         </div>
       </header>
 
-      <section className="section-block">
-        <div className="section-head">
-          <div>
-            <h2>Today</h2>
-            <p>Counts are based on received_at, with classified throughput shown separately.</p>
-          </div>
+      <section className="coo-toolbar" aria-label="Overview filters">
+        <div className="coo-toolbar__group" role="tablist" aria-label="Date ranges">
+          {DATE_PRESETS.map((preset) => (
+            <Link
+              key={preset.value}
+              href={buildUrl(current, { range: preset.value })}
+              className={`coo-filter-link ${range === preset.value ? "active" : ""}`}
+            >
+              {preset.label}
+            </Link>
+          ))}
         </div>
-        <div className="metric-grid">
-          <MetricCard
-            label="Emails Received Today"
-            value={data.metrics.emailsReceivedToday}
-            hint="Fresh intake from the tracker mailbox"
-            accent="neutral"
-          />
-          <MetricCard
-            label="Applications"
-            value={data.metrics.applicationReceivedToday}
-            hint="Incoming application_received emails"
-            accent="neutral"
-          />
-          <MetricCard
-            label="Interviews"
-            value={data.metrics.interviewInviteToday}
-            hint="Invite volume today"
-            accent="interview"
-          />
-          <MetricCard
-            label="Assessments"
-            value={data.metrics.assessmentToday}
-            hint="Assessment requests today"
-            accent="neutral"
-          />
-          <MetricCard
-            label="Offers"
-            value={data.metrics.jobOfferToday}
-            hint="Highest-priority activity"
-            accent="offer"
-          />
-          <MetricCard
-            label="Rejections"
-            value={data.metrics.rejectionToday}
-            hint="Closed opportunities"
-            accent="neutral"
-          />
-          <MetricCard
-            label="Recruiter Replies"
-            value={data.metrics.recruiterReplyToday}
-            hint="Reply volume today"
-            accent="neutral"
-          />
-          <MetricCard
-            label="Needs Review"
-            value={data.metrics.needsReview}
-            hint="Manual attention required"
-            accent="review"
-          />
-        </div>
-      </section>
 
-      <section className="section-block">
-        <div className="section-head">
-          <div>
-            <h2>System Health</h2>
-            <p>Queue state and ingestion freshness for the tracker pipeline.</p>
-          </div>
-          <Link href="/dashboard" className="subtle-link">
-            Open technical dashboard
+        <div className="coo-toolbar__group" role="tablist" aria-label="Stage filters">
+          {STAGE_PRESETS.map((preset) => (
+            <Link
+              key={preset.value}
+              href={buildUrl(current, { stage: preset.value })}
+              className={`coo-filter-link ${stage === preset.value ? "active" : ""}`}
+            >
+              {preset.label}
+            </Link>
+          ))}
+        </div>
+
+        <div className="coo-toolbar__group">
+          <Link
+            href={buildUrl(current, {
+              deadline: deadline === "tomorrow" ? null : "tomorrow",
+            })}
+            className={`coo-filter-link ${deadline === "tomorrow" ? "active" : ""}`}
+          >
+            Deadline Tomorrow
           </Link>
         </div>
-        <div className="system-grid">
-          <SystemCard label="Pending" value={data.queue.pending} tone="neutral" />
-          <SystemCard label="Processing" value={data.queue.processing} tone="neutral" />
-          <SystemCard label="Retrying" value={data.queue.retryScheduled} tone="warning" />
-          <SystemCard
-            label="Review Queue"
-            value={data.queue.review}
-            tone="review"
-            hint={`Classified today: ${data.metrics.classifiedToday}`}
-          />
-          <SystemCard
-            label="Dead Letter"
-            value={data.queue.deadLetter}
-            tone="critical"
-            badge={data.queue.deadLetter > 0 ? "Attention" : "Small"}
-          />
-          <SystemCard
-            label="Oldest Backlog Age"
-            value={formatBacklogAge(data.queue.oldestBacklogAgeMinutes)}
-            tone="warning"
-            hint="Oldest pending or retrying item in the queue"
-          />
-          <SystemCard
-            label="Latest Ingest Time"
-            value={
-              data.queue.latestSuccessfulIngestAt
-                ? formatReceivedAt(data.queue.latestSuccessfulIngestAt)
-                : "Not available yet"
-            }
-            tone={hasCheckpoint ? "success" : "neutral"}
-            hint={hasCheckpoint ? "Latest successful sync checkpoint" : "Checkpoint not available yet"}
-          />
-        </div>
+
+        <form className="coo-date-form" action="/overview" method="get">
+          <input type="hidden" name="stage" value={stage} />
+          <input type="hidden" name="deadline" value={deadline ?? ""} />
+          <label>
+            <span>From</span>
+            <input type="date" name="from" defaultValue={from ?? ""} />
+          </label>
+          <label>
+            <span>To</span>
+            <input type="date" name="to" defaultValue={to ?? ""} />
+          </label>
+          <button type="submit" className="coo-action-button">
+            Apply
+          </button>
+        </form>
       </section>
 
-      <section className="section-block">
-        <div className="section-head">
-          <div>
-            <h2>Important Activity</h2>
-            <p>High-signal events only. No sender, subject, body, or raw headers.</p>
-          </div>
+      <SectionBlock
+        title="Today"
+        subtitle="Counts are based on received_at, with classified throughput shown separately."
+      >
+        <div className="coo-metric-grid">
+          <MetricCard label="Total Emails" value={data.metrics.totalEmails} hint="Selected business window" tone="neutral" />
+          <MetricCard label="New Emails" value={data.metrics.newEmails} hint="Based on first_seen_at" tone="neutral" />
+          <MetricCard label="Pending Classification" value={data.metrics.pendingClassification} hint="Awaiting work" tone="warning" />
+          <MetricCard label="Classified" value={data.metrics.classifiedToday} hint="Based on classified_at" tone="success" />
+          <MetricCard label="Review Queue" value={data.metrics.review} hint="Needs human review" tone="review" />
+          <MetricCard label="Applications" value={data.metrics.applications} hint="application_received" tone="neutral" />
+          <MetricCard label="Interviews" value={data.metrics.interviews} hint="Highest-signal follow up" tone="interview" />
+          <MetricCard label="Assessments" value={data.metrics.assessments} hint="Timed evaluation requests" tone="assessment" />
+          <MetricCard label="Offers" value={data.metrics.offers} hint="Highest-priority activity" tone="offer" />
+          <MetricCard label="Rejections" value={data.metrics.rejections} hint="Closed opportunities" tone="neutral" />
+          <MetricCard label="Recruiter Replies" value={data.metrics.recruiterReplies} hint="Response handling" tone="neutral" />
+          <MetricCard label="Follow-up Needed" value={data.metrics.followUpNeeded} hint="Needs action" tone="review" />
         </div>
+      </SectionBlock>
 
-        {!hasImportantActivity ? (
-          <div className="empty-state">
-            <strong>No high-priority activity yet.</strong>
-            <p>Offer, interview, assessment, recruiter reply, follow-up, and review items will appear here.</p>
-          </div>
+      <SectionBlock
+        title="Master Client Tracking"
+        subtitle="One row per original_recipient. Tracker mailbox is hidden from the client identity surface."
+      >
+        {!hasRows ? (
+          <EmptyState
+            title="No client rows for the selected filters."
+            description="Try a wider date range or switch the stage filter to All."
+          />
         ) : (
-          <div className="activity-list">
-            {data.importantActivity.map((item) => {
-              const deadline = formatDeadline(item.deadline);
-              return (
-                <article className="activity-card" key={item.id}>
-                  <div className="activity-topline">
-                    <div className="badge-row">
-                      <Badge label={item.category ?? "unknown"} tone="category" />
-                      <Badge
-                        label={item.classificationStatus}
-                        tone={item.classificationStatus === "review" ? "review" : "neutral"}
-                      />
-                      <Badge label={item.priority} tone={item.priority === "review" ? "review" : "neutral"} />
+          <>
+            <div className="coo-table-card">
+              <table className="coo-table coo-table--overview">
+                <thead>
+                  <tr>
+                    <th>Client Identity</th>
+                    <th>Total Emails</th>
+                    <th>New Emails</th>
+                    <th>Applications</th>
+                    <th>Interviews</th>
+                    <th>Assessments</th>
+                    <th>Offers</th>
+                    <th>Rejections</th>
+                    <th>Recruiter Replies</th>
+                    <th>Follow-up Needed</th>
+                    <th>Last Meaningful Update</th>
+                    <th>Queue Status</th>
+                    <th>Urgency</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.clientRows.map((row) => (
+                    <tr key={row.clientKey}>
+                      <td className="coo-client-cell">
+                        <Link href={`/clients/${row.clientKey}`} className="coo-client-link">
+                          {row.originalRecipient}
+                        </Link>
+                        <span className="coo-client-note">Client name available after Leads mapping</span>
+                      </td>
+                      <td>{row.totalEmails}</td>
+                      <td>{row.newEmails}</td>
+                      <td>{row.applications}</td>
+                      <td>{row.interviews}</td>
+                      <td>{row.assessments}</td>
+                      <td className="coo-highlight">{row.offers}</td>
+                      <td>{row.rejections}</td>
+                      <td>{row.recruiterReplies}</td>
+                      <td>{row.followUpNeeded}</td>
+                      <td className="coo-update-cell">
+                        <span>{row.latestUpdateLabel}</span>
+                        {row.latestMeaningfulDeadline ? (
+                          <span className="coo-update-note">Deadline: {formatDeadline(row.latestMeaningfulDeadline)}</span>
+                        ) : null}
+                      </td>
+                      <td>
+                        <CooBadge label={row.queueState} tone={toneForQueueState(row.queueState)} />
+                      </td>
+                      <td>
+                        <CooBadge label={row.urgency} tone={row.urgency === "offer" ? "offer" : row.urgency === "interview" ? "interview" : row.urgency === "assessment" ? "assessment" : row.urgency === "review required" ? "review" : "neutral"} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="coo-mobile-grid">
+              {data.clientRows.map((row) => (
+                <Link key={row.clientKey} href={`/clients/${row.clientKey}`} className="coo-mobile-card">
+                  <div className="coo-mobile-card__top">
+                    <div>
+                      <div className="coo-mobile-card__title">{row.originalRecipient}</div>
+                      <div className="coo-mobile-card__subtitle">{row.latestUpdateLabel}</div>
                     </div>
-                    <time className="activity-time" dateTime={item.receivedAt}>
-                      {formatReceivedAt(item.receivedAt)}
-                    </time>
-                  </div>
-
-                  <div className="activity-identity">{item.originalRecipient ?? "Unmapped recipient"}</div>
-
-                  <div className="activity-meta">
-                    {deadline ? <span>Deadline: {deadline}</span> : null}
-                    {item.actionRequired ? <span>Action: {item.actionRequired}</span> : null}
-                  </div>
-
-                  {item.classificationStatus === "review" ? (
-                    <div className="review-note">
-                      <Badge label="Review" tone="review" />
-                      <p>{item.safeReason ?? "Classification reason redacted for safety."}</p>
+                    <div className="coo-chip-stack">
+                      <CooBadge label={row.queueState} tone={row.queueState === "Dead Letter" ? "critical" : row.queueState === "Review Queue" ? "review" : "neutral"} />
+                      <CooBadge label={row.urgency} tone={row.urgency === "offer" ? "offer" : row.urgency === "interview" ? "interview" : row.urgency === "assessment" ? "assessment" : row.urgency === "review required" ? "review" : "neutral"} />
                     </div>
-                  ) : null}
-                </article>
-              );
-            })}
-          </div>
+                  </div>
+                  <div className="coo-mobile-card__stats">
+                    <span>Total {row.totalEmails}</span>
+                    <span>New {row.newEmails}</span>
+                    <span>Interviews {row.interviews}</span>
+                    <span>Offers {row.offers}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </>
         )}
-      </section>
+      </SectionBlock>
 
-      <section className="footer-grid">
-        <div className="footer-card">
-          <h3>Operational notes</h3>
-          <ul>
-            <li>Tracker mailbox stays hidden from the client identity layer.</li>
-            <li>Review rows surface only safe reasons.</li>
-            <li>Dead letter remains visible, but visually small.</li>
-          </ul>
+      <div className="coo-dual-grid">
+        <SectionBlock
+          title="System Health"
+          subtitle="Queue state and ingestion freshness for the tracker pipeline."
+          action={<Link href="/dashboard" className="coo-inline-link">Open technical dashboard</Link>}
+        >
+          <div className="coo-system-grid">
+            <MetricCard label="Pending" value={data.metrics.pending} hint="Awaiting classification" tone="warning" />
+            <MetricCard label="Processing" value={data.metrics.processing} hint="Claims in flight" tone="neutral" />
+            <MetricCard label="Retry Scheduled" value={data.metrics.retryScheduled} hint="Waiting for next attempt" tone="warning" />
+            <MetricCard label="Review" value={data.metrics.review} hint="Human review required" tone="review" />
+            <MetricCard label="Dead Letter" value={data.metrics.deadLetter} hint="Failed safely" tone="critical" />
+            <MetricCard label="Oldest Backlog Age" value={data.metrics.oldestBacklogAgeMinutes === null ? "—" : `${data.metrics.oldestBacklogAgeMinutes}m`} hint="first_seen_at or created_at" tone="warning" />
+            <MetricCard label="Latest Successful Ingest" value={latestIngest} hint="zoho_sync_checkpoints" tone={data.metrics.latestSuccessfulIngestAt ? "success" : "neutral"} />
+            <MetricCard label="Current Processing" value={data.metrics.currentProcessingCount} hint="Live workers claiming rows" tone="neutral" />
+          </div>
+        </SectionBlock>
+
+        <SectionBlock
+          title="Important Activity"
+          subtitle="High-signal events only. No sender, subject, body, or raw headers."
+        >
+          {!hasActivity ? (
+            <EmptyState
+              title="No high-priority activity yet."
+              description="Offer, interview, assessment, recruiter reply, follow-up, and review items will appear here."
+            />
+          ) : (
+            <div className="coo-activity-list">
+              {data.activityRows.map((item) => {
+                const deadline = formatDeadline(item.deadline);
+                return (
+                  <article key={item.id} className="coo-activity-card">
+                    <div className="coo-activity-card__top">
+                      <div className="coo-chip-row">
+                        <CooBadge label={item.category ?? "review"} tone={toneForCategory(item.category)} />
+                        <CooBadge label={item.queueStatusLabel} tone={toneForQueue(item.classificationStatus)} />
+                        <CooBadge label={item.priority} tone={item.priority === "offer" ? "offer" : item.priority === "review" ? "review" : "neutral"} />
+                      </div>
+                      <time className="coo-activity-time" dateTime={item.receivedAt}>
+                        {formatDateTime(item.receivedAt)}
+                      </time>
+                    </div>
+                    <div className="coo-activity-recipient">{item.originalRecipient ?? "Unmapped recipient"}</div>
+                    <div className="coo-activity-meta">
+                      {deadline ? <span>Deadline: {deadline}</span> : null}
+                      {item.actionRequired ? <span>Action: {item.actionRequired}</span> : null}
+                    </div>
+                    {item.classificationStatus === "review" ? (
+                      <div className="coo-review-note">
+                        <CooBadge label="Review" tone="review" />
+                        <p>{item.safeReason ?? "Classification reason redacted for safety."}</p>
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </SectionBlock>
+      </div>
+
+      <SectionBlock
+        title="Two-stage Processing Flow"
+        subtitle="A concise COO-facing summary of how the tracker works."
+      >
+        <div className="coo-flow">
+          {[
+            "Incoming Email",
+            "Tracker Inbox",
+            "Awaiting Classification",
+            "Rules / AI Classification",
+            "Client Activity View",
+            "Review Queue when required",
+          ].map((step, index) => (
+            <div key={step} className="coo-flow__step">
+              <span className="coo-flow__index">{index + 1}</span>
+              <span>{step}</span>
+            </div>
+          ))}
         </div>
-        <div className="footer-card">
-          <h3>Empty-state checks</h3>
-          <ul>
-            <li>{hasNoTodayEmails ? "No emails arrived today yet." : "Today has inbound email activity."}</li>
-            <li>{hasNoReviewItems ? "No review items are waiting." : "Review items are currently waiting."}</li>
-            <li>{hasCheckpoint ? "Latest ingest checkpoint is available." : "Latest ingest checkpoint is missing."}</li>
-          </ul>
-        </div>
-      </section>
+      </SectionBlock>
 
-      <style>{`
-        .overview-shell {
-          display: flex;
-          flex-direction: column;
-          gap: 24px;
-        }
-
-        .overview-header {
-          display: flex;
-          align-items: flex-end;
-          justify-content: space-between;
-          gap: 16px;
-          padding: 24px;
-          border: 1px solid var(--border-gray);
-          border-radius: 20px;
-          background: var(--white);
-          box-shadow: var(--card-shadow);
-        }
-
-        .header-copy {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .eyebrow {
-          font-size: 0.75rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: var(--primary-blue);
-        }
-
-        .overview-header h1 {
-          margin: 0;
-          font-family: var(--font-space-grotesk), sans-serif;
-          font-size: clamp(2rem, 3.5vw, 3rem);
-          color: var(--text-dark);
-          letter-spacing: -0.03em;
-        }
-
-        .overview-header p,
-        .section-head p,
-        .system-hint,
-        .metric-hint,
-        .empty-state p,
-        .activity-meta,
-        .footer-card li {
-          color: var(--text-muted);
-        }
-
-        .header-meta {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-end;
-          gap: 10px;
-        }
-
-        .header-date {
-          font-size: 0.95rem;
-          color: var(--text-muted);
-          text-align: right;
-        }
-
-        .header-chip-row {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-          justify-content: flex-end;
-        }
-
-        .section-block {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-
-        .section-head {
-          display: flex;
-          align-items: flex-end;
-          justify-content: space-between;
-          gap: 16px;
-        }
-
-        .section-head h2,
-        .footer-card h3 {
-          margin: 0;
-          font-family: var(--font-space-grotesk), sans-serif;
-          font-size: 1.3rem;
-          color: var(--text-dark);
-        }
-
-        .subtle-link {
-          font-size: 0.875rem;
-          font-weight: 600;
-          color: var(--primary-blue);
-        }
-
-        .metric-grid {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 16px;
-        }
-
-        .metric-card,
-        .system-card,
-        .activity-card,
-        .footer-card,
-        .empty-state {
-          border: 1px solid var(--border-gray);
-          background: var(--white);
-          border-radius: 18px;
-          box-shadow: var(--card-shadow);
-        }
-
-        .metric-card {
-          padding: 18px;
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-          min-height: 140px;
-        }
-
-        .metric-card--offer {
-          border-color: rgba(16, 185, 129, 0.28);
-          background: linear-gradient(180deg, rgba(16, 185, 129, 0.08), var(--white));
-        }
-
-        .metric-card--interview {
-          border-color: rgba(245, 158, 11, 0.28);
-          background: linear-gradient(180deg, rgba(245, 158, 11, 0.08), var(--white));
-        }
-
-        .metric-card--review {
-          border-color: rgba(239, 68, 68, 0.24);
-          background: linear-gradient(180deg, rgba(239, 68, 68, 0.06), var(--white));
-        }
-
-        .metric-copy {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .metric-label,
-        .system-label {
-          font-size: 0.8rem;
-          font-weight: 700;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--text-muted);
-        }
-
-        .metric-value {
-          font-family: var(--font-space-grotesk), sans-serif;
-          font-size: clamp(2rem, 3vw, 2.6rem);
-          line-height: 1;
-          color: var(--text-dark);
-        }
-
-        .metric-hint {
-          margin-top: auto;
-          font-size: 0.875rem;
-          line-height: 1.5;
-        }
-
-        .system-grid {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 16px;
-        }
-
-        .system-card {
-          padding: 18px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          min-height: 128px;
-        }
-
-        .system-card-top {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-        }
-
-        .system-value {
-          font-family: var(--font-space-grotesk), sans-serif;
-          font-size: clamp(1.5rem, 2.2vw, 2rem);
-          color: var(--text-dark);
-        }
-
-        .system-card--warning {
-          border-color: rgba(245, 158, 11, 0.24);
-        }
-
-        .system-card--critical {
-          border-color: rgba(239, 68, 68, 0.24);
-        }
-
-        .system-card--success {
-          border-color: rgba(16, 185, 129, 0.24);
-        }
-
-        .system-card--review {
-          border-color: rgba(239, 68, 68, 0.24);
-        }
-
-        .system-badge {
-          font-size: 0.72rem;
-          font-weight: 700;
-          padding: 4px 8px;
-          border-radius: 9999px;
-          background: #f8fafc;
-          color: var(--text-muted);
-        }
-
-        .system-hint {
-          font-size: 0.82rem;
-          line-height: 1.45;
-        }
-
-        .activity-list {
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-        }
-
-        .activity-card {
-          padding: 18px;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .activity-topline {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-        }
-
-        .badge-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-        }
-
-        .overview-badge {
-          display: inline-flex;
-          align-items: center;
-          border-radius: 9999px;
-          padding: 5px 10px;
-          font-size: 0.72rem;
-          font-weight: 700;
-          letter-spacing: 0.03em;
-          text-transform: uppercase;
-        }
-
-        .overview-badge--neutral {
-          background: #f3f4f6;
-          color: #475569;
-        }
-
-        .overview-badge--success {
-          background: var(--success-green-bg);
-          color: var(--success-green);
-        }
-
-        .overview-badge--warning {
-          background: var(--pending-orange-bg);
-          color: var(--pending-orange);
-        }
-
-        .overview-badge--critical {
-          background: var(--urgent-red-bg);
-          color: var(--urgent-red);
-        }
-
-        .overview-badge--review {
-          background: rgba(239, 68, 68, 0.12);
-          color: #dc2626;
-        }
-
-        .overview-badge--category {
-          background: #eef2ff;
-          color: #4f46e5;
-        }
-
-        .activity-time {
-          font-size: 0.85rem;
-          color: var(--text-muted);
-          white-space: nowrap;
-        }
-
-        .activity-identity {
-          font-family: var(--font-space-grotesk), sans-serif;
-          font-size: 1rem;
-          color: var(--text-dark);
-          letter-spacing: -0.01em;
-        }
-
-        .activity-meta {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 12px;
-          font-size: 0.875rem;
-        }
-
-        .review-note {
-          display: flex;
-          align-items: flex-start;
-          gap: 10px;
-          padding: 12px 14px;
-          border-radius: 14px;
-          background: rgba(239, 68, 68, 0.05);
-          border: 1px solid rgba(239, 68, 68, 0.12);
-        }
-
-        .review-note p {
-          margin: 0;
-          color: var(--text-dark);
-          line-height: 1.5;
-        }
-
-        .empty-state {
-          padding: 24px;
-        }
-
-        .empty-state strong {
-          display: block;
-          margin-bottom: 6px;
-          font-family: var(--font-space-grotesk), sans-serif;
-          font-size: 1rem;
-          color: var(--text-dark);
-        }
-
-        .footer-grid {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 16px;
-        }
-
-        .footer-card {
-          padding: 18px;
-        }
-
-        .footer-card ul {
-          margin: 12px 0 0;
-          padding-left: 18px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        @media (max-width: 1024px) {
-          .metric-grid,
-          .system-grid,
-          .footer-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-          }
-
-          .overview-header {
-            align-items: flex-start;
-            flex-direction: column;
-          }
-
-          .header-meta {
-            align-items: flex-start;
-          }
-        }
-
-        @media (max-width: 640px) {
-          .metric-grid,
-          .system-grid,
-          .footer-grid {
-            grid-template-columns: 1fr;
-          }
-
-          .overview-header,
-          .section-head,
-          .activity-topline {
-            flex-direction: column;
-            align-items: flex-start;
-          }
-
-          .activity-time {
-            white-space: normal;
-          }
-        }
-      `}</style>
     </main>
   );
 }

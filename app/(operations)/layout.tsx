@@ -6,14 +6,13 @@ import { usePathname } from "next/navigation";
 import { Noto_Sans, Inter, Space_Grotesk } from "next/font/google";
 import {
   IconOverview,
-  IconApplications,
   IconClients,
   IconMailboxes,
   IconReviewQueue,
   IconMenu,
   IconClose,
-  IconMore,
 } from "@/components/icons";
+import { CooPageStyles } from "@/components/coo-page-styles";
 
 const noto = Noto_Sans({
   subsets: ["latin"],
@@ -63,6 +62,17 @@ export default function OperationsLayout({
   children: React.ReactNode;
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const pathname = usePathname();
+  const activeLabel =
+    pathname === "/overview"
+      ? "Overview"
+      : pathname === "/clients"
+        ? "Clients"
+        : pathname === "/operations"
+          ? "Operations"
+          : pathname === "/review-queue"
+            ? "Review Queue"
+            : "COO";
 
   return (
     <div
@@ -84,20 +94,11 @@ export default function OperationsLayout({
             label="Overview"
           />
           <NavLink
-            href="/applications"
-            icon={<IconApplications size={20} />}
-            label="Applications"
-          />
-          <NavLink
             href="/clients"
             icon={<IconClients size={20} />}
-            label="Clients & Mailboxes"
+            label="Clients"
           />
-          <NavLink
-            href="/mailboxes"
-            icon={<IconMailboxes size={20} />}
-            label="Connections"
-          />
+          <NavLink href="/operations" icon={<IconMailboxes size={20} />} label="Operations" />
           <NavLink
             href="/review-queue"
             icon={<IconReviewQueue size={20} />}
@@ -169,23 +170,12 @@ export default function OperationsLayout({
                 onClick={() => setMobileMenuOpen(false)}
               />
               <NavLink
-                href="/applications"
-                icon={<IconApplications size={20} />}
-                label="Applications"
-                onClick={() => setMobileMenuOpen(false)}
-              />
-              <NavLink
                 href="/clients"
                 icon={<IconClients size={20} />}
-                label="Clients & Mailboxes"
+                label="Clients"
                 onClick={() => setMobileMenuOpen(false)}
               />
-              <NavLink
-                href="/mailboxes"
-                icon={<IconMailboxes size={20} />}
-                label="Connections"
-                onClick={() => setMobileMenuOpen(false)}
-              />
+              <NavLink href="/operations" icon={<IconMailboxes size={20} />} label="Operations" onClick={() => setMobileMenuOpen(false)} />
               <NavLink
                 href="/review-queue"
                 icon={<IconReviewQueue size={20} />}
@@ -203,7 +193,7 @@ export default function OperationsLayout({
           <div className="header-breadcrumbs">
             <span>Operations Console</span>
             <span className="separator">/</span>
-            <span className="active-path">Dashboard</span>
+            <span className="active-path">{activeLabel}</span>
           </div>
           <div className="header-actions">
             <span className="live-status">
@@ -213,7 +203,10 @@ export default function OperationsLayout({
           </div>
         </header>
 
-        <div className="workspace-content">{children}</div>
+        <div className="workspace-content">
+          <CooPageStyles />
+          {children}
+        </div>
       </div>
 
       {/* ── Mobile Bottom Navigation Bar ── */}
@@ -226,15 +219,15 @@ export default function OperationsLayout({
         </Link>
         <Link href="/clients" className="bottom-nav-item">
           <span className="nav-icon">
-            <IconClients size={20} />
+            <IconMailboxes size={20} />
           </span>
           <span className="nav-text">Clients</span>
         </Link>
-        <Link href="/mailboxes" className="bottom-nav-item">
+        <Link href="/operations" className="bottom-nav-item">
           <span className="nav-icon">
-            <IconMailboxes size={20} />
+            <IconClients size={20} />
           </span>
-          <span className="nav-text">Mailboxes</span>
+          <span className="nav-text">Operations</span>
         </Link>
         <Link href="/review-queue" className="bottom-nav-item">
           <span className="nav-icon">
@@ -242,17 +235,6 @@ export default function OperationsLayout({
           </span>
           <span className="nav-text">Review</span>
         </Link>
-        <button
-          type="button"
-          onClick={() => setMobileMenuOpen(true)}
-          className="bottom-nav-item bottom-nav-btn"
-          aria-label="More navigation options"
-        >
-          <span className="nav-icon">
-            <IconMore size={20} />
-          </span>
-          <span className="nav-text">More</span>
-        </button>
       </div>
 
       <style jsx global>{`
@@ -569,6 +551,417 @@ export default function OperationsLayout({
         .mobile-bottom-nav,
         .mobile-drawer-overlay {
           display: none;
+        }
+
+        /* ── COO Shared Surfaces ── */
+        .coo-page {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+          color: var(--text-dark);
+        }
+
+        .coo-page__header {
+          display: flex;
+          justify-content: space-between;
+          gap: 18px;
+          align-items: start;
+          flex-wrap: wrap;
+        }
+
+        .coo-page__eyebrow {
+          display: inline-flex;
+          margin-bottom: 8px;
+          font-size: 0.78rem;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          color: var(--text-muted);
+          font-weight: 700;
+        }
+
+        .coo-page__title {
+          font-family: var(--font-brand);
+          font-size: clamp(1.8rem, 2vw, 2.5rem);
+          line-height: 1.1;
+          color: var(--text-dark);
+        }
+
+        .coo-page__subtitle {
+          margin-top: 8px;
+          color: var(--text-muted);
+          max-width: 62ch;
+        }
+
+        .coo-page__meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: start;
+          justify-content: flex-end;
+        }
+
+        .coo-toolbar {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          padding: 14px;
+          border: 1px solid var(--border-gray);
+          border-radius: 18px;
+          background: var(--white);
+          box-shadow: var(--card-shadow);
+        }
+
+        .coo-toolbar__group {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .coo-filter-link,
+        .coo-inline-link {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 999px;
+          text-decoration: none;
+          font-weight: 600;
+          transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+        }
+
+        .coo-filter-link {
+          padding: 9px 14px;
+          border: 1px solid var(--border-gray);
+          background: #fff;
+          color: var(--text-muted);
+        }
+
+        .coo-filter-link.active {
+          background: rgba(44, 118, 255, 0.12);
+          border-color: rgba(44, 118, 255, 0.3);
+          color: var(--primary-blue);
+        }
+
+        .coo-inline-link {
+          color: var(--primary-blue);
+          text-decoration: none;
+          font-weight: 700;
+        }
+
+        .coo-action-button {
+          cursor: pointer;
+        }
+
+        .coo-section {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+        }
+
+        .coo-section__head {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          align-items: start;
+          flex-wrap: wrap;
+        }
+
+        .coo-section__head h2 {
+          font-family: var(--font-brand);
+          font-size: 1.35rem;
+          color: var(--text-dark);
+        }
+
+        .coo-section__head p {
+          margin-top: 6px;
+          color: var(--text-muted);
+        }
+
+        .coo-section__action {
+          display: flex;
+          align-items: center;
+        }
+
+        .coo-metric-grid {
+          display: grid;
+          gap: 14px;
+        }
+
+        .coo-metric {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          padding: 18px;
+          border: 1px solid var(--border-gray);
+          border-radius: 18px;
+          background: var(--white);
+          box-shadow: var(--card-shadow);
+          min-height: 152px;
+        }
+
+        .coo-metric__head {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          align-items: start;
+        }
+
+        .coo-metric__label {
+          font-size: 0.8rem;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-muted);
+          font-weight: 700;
+        }
+
+        .coo-metric__icon {
+          color: var(--primary-blue);
+        }
+
+        .coo-metric__value {
+          font-family: var(--font-brand);
+          font-size: clamp(1.8rem, 2.5vw, 2.6rem);
+          line-height: 1;
+          color: var(--text-dark);
+        }
+
+        .coo-metric__hint {
+          color: var(--text-muted);
+          font-size: 0.88rem;
+          margin-top: auto;
+        }
+
+        .coo-metric--offer {
+          border-color: rgba(41, 254, 41, 0.28);
+          background: linear-gradient(180deg, rgba(41, 254, 41, 0.08), #fff);
+        }
+
+        .coo-metric--interview {
+          border-color: rgba(44, 118, 255, 0.28);
+          background: linear-gradient(180deg, rgba(44, 118, 255, 0.08), #fff);
+        }
+
+        .coo-metric--assessment {
+          border-color: rgba(251, 146, 60, 0.28);
+          background: linear-gradient(180deg, rgba(251, 146, 60, 0.08), #fff);
+        }
+
+        .coo-metric--review {
+          border-color: rgba(248, 113, 113, 0.28);
+          background: linear-gradient(180deg, rgba(248, 113, 113, 0.08), #fff);
+        }
+
+        .coo-metric--warning {
+          border-color: rgba(234, 88, 12, 0.22);
+        }
+
+        .coo-metric--critical {
+          border-color: rgba(248, 113, 113, 0.32);
+        }
+
+        .coo-metric--success {
+          border-color: rgba(34, 197, 94, 0.24);
+        }
+
+        .coo-badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 0.75rem;
+          font-weight: 700;
+          line-height: 1;
+          border: 1px solid transparent;
+          white-space: nowrap;
+        }
+
+        .coo-badge.is-compact {
+          padding: 4px 8px;
+        }
+
+        .coo-badge--neutral {
+          background: rgba(100, 116, 139, 0.08);
+          color: #334155;
+          border-color: rgba(100, 116, 139, 0.16);
+        }
+
+        .coo-badge--success {
+          background: rgba(34, 197, 94, 0.12);
+          color: #15803d;
+          border-color: rgba(34, 197, 94, 0.18);
+        }
+
+        .coo-badge--warning {
+          background: rgba(234, 88, 12, 0.12);
+          color: #b45309;
+          border-color: rgba(234, 88, 12, 0.18);
+        }
+
+        .coo-badge--critical {
+          background: rgba(239, 68, 68, 0.12);
+          color: #b91c1c;
+          border-color: rgba(239, 68, 68, 0.18);
+        }
+
+        .coo-badge--review {
+          background: rgba(168, 85, 247, 0.12);
+          color: #7c3aed;
+          border-color: rgba(168, 85, 247, 0.18);
+        }
+
+        .coo-badge--offer {
+          background: rgba(16, 185, 129, 0.12);
+          color: #047857;
+          border-color: rgba(16, 185, 129, 0.18);
+        }
+
+        .coo-badge--interview {
+          background: rgba(44, 118, 255, 0.12);
+          color: #1d4ed8;
+          border-color: rgba(44, 118, 255, 0.18);
+        }
+
+        .coo-badge--assessment {
+          background: rgba(251, 146, 60, 0.12);
+          color: #c2410c;
+          border-color: rgba(251, 146, 60, 0.18);
+        }
+
+        .coo-empty {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding: 18px;
+          border: 1px dashed rgba(100, 116, 139, 0.25);
+          border-radius: 18px;
+          background: rgba(255, 255, 255, 0.65);
+        }
+
+        .coo-empty strong {
+          font-weight: 700;
+          color: var(--text-dark);
+        }
+
+        .coo-empty p {
+          color: var(--text-muted);
+        }
+
+        .coo-metric-grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+
+        .coo-table-card {
+          overflow: auto;
+          border: 1px solid var(--border-gray);
+          border-radius: 18px;
+          background: var(--white);
+          box-shadow: var(--card-shadow);
+        }
+
+        .coo-table {
+          width: 100%;
+          border-collapse: collapse;
+          color: var(--text-dark);
+        }
+
+        .coo-table th,
+        .coo-table td {
+          padding: 16px 14px;
+          border-bottom: 1px solid var(--border-gray);
+          vertical-align: top;
+        }
+
+        .coo-table th {
+          text-align: left;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--text-muted);
+          background: #fbfcff;
+        }
+
+        .coo-mobile-grid {
+          display: none;
+        }
+
+        .coo-mobile-card {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          padding: 16px;
+          border: 1px solid var(--border-gray);
+          border-radius: 18px;
+          background: var(--white);
+          color: inherit;
+          text-decoration: none;
+          box-shadow: var(--card-shadow);
+        }
+
+        .coo-mobile-card__top {
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+          align-items: start;
+        }
+
+        .coo-mobile-card__title {
+          font-weight: 700;
+          color: var(--text-dark);
+          word-break: break-word;
+        }
+
+        .coo-mobile-card__subtitle {
+          color: var(--text-muted);
+          font-size: 0.85rem;
+          margin-top: 4px;
+        }
+
+        .coo-mobile-card__stats {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          color: var(--text-muted);
+          font-size: 0.84rem;
+        }
+
+        .coo-chip-row,
+        .coo-chip-stack {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+
+        .coo-flow {
+          display: grid;
+          grid-template-columns: repeat(6, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .coo-flow__step {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-height: 64px;
+          padding: 14px;
+          border: 1px solid var(--border-gray);
+          border-radius: 16px;
+          background: linear-gradient(180deg, #fff 0%, #f9fbff 100%);
+          font-weight: 600;
+          color: var(--text-dark);
+        }
+
+        .coo-flow__index {
+          width: 28px;
+          height: 28px;
+          border-radius: 999px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(44, 118, 255, 0.12);
+          color: var(--primary-blue);
+          font-size: 0.85rem;
+          flex-shrink: 0;
         }
 
         /* ── Responsive Rules (Media Queries) ── */
