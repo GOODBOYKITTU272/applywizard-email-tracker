@@ -1,1058 +1,683 @@
-"use client";
-
-import React, { useState } from "react";
 import Link from "next/link";
-import { mockApplications, mockClients, mockCAs } from "@/lib/mockData";
-import { classifyApplications, REVIEW_CATEGORIES } from "@/lib/classify/classifyMockEmails";
+
 import {
-  IconMail,
-  IconApplications,
-  IconClients,
-  IconAssessment,
-  IconRejection,
-  IconWarning,
-  IconRefresh,
-} from "@/components/icons";
+  formatBacklogAge,
+  getOverviewDashboardData,
+} from "@/lib/zoho/cooOverview";
 
-export default function OverviewPage() {
-  const [selectedCA, setSelectedCA] = useState("all");
-  const [selectedStatus, setSelectedStatus] = useState("all");
-  const [dateRange, setDateRange] = useState("last_7_days");
-  const [isRefreshing, setIsRefreshing] = useState(false);
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-  // ── Derived classification (single source of truth) ─────────────────────────
-  const classifiedApps = classifyApplications(mockApplications);
+type MetricCardProps = {
+  label: string;
+  value: number | string;
+  hint: string;
+  accent?: "offer" | "interview" | "review" | "neutral";
+};
 
-  // ── Data Calculations ────────────────────────────────────────────────────────
-  const totalEmails = classifiedApps.length;
-  const totalAppsCount = classifiedApps.filter(
-    (a) => a.derived.category === "application_received"
-  ).length;
-  const interviewsCount = classifiedApps.filter(
-    (a) => a.derived.category === "interview_invite"
-  ).length;
-  const assessmentsCount = classifiedApps.filter(
-    (a) => a.derived.category === "assessment"
-  ).length;
-  const rejectionsCount = classifiedApps.filter(
-    (a) => a.derived.category === "rejection"
-  ).length;
-  const reviewRequiredCount = classifiedApps.filter(
-    (a) => a.derived.needs_human_review
-  ).length;
+type SystemCardProps = {
+  label: string;
+  value: string | number;
+  hint?: string;
+  tone?: "neutral" | "warning" | "critical" | "success" | "review";
+  badge?: string;
+};
 
-  // Attention Needed: only job-related review categories, no OTPs/system emails
-  const attentionItems = classifiedApps
-    .filter(
-      (a) =>
-        a.derived.needs_human_review &&
-        REVIEW_CATEGORIES.includes(a.derived.category)
-    )
-    .slice(0, 4);
+function formatDateLabel(date: Date): string {
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "full",
+    timeZone: "Asia/Kolkata",
+  }).format(date);
+}
 
-  // Recent Emails List (latest 5)
-  const recentEmails = classifiedApps.slice(0, 5);
+function formatReceivedAt(value: string): string {
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata",
+  }).format(new Date(value));
+}
 
-  // Top Categories counts (derived)
-  const categoryCounts = classifiedApps.reduce((acc, curr) => {
-    acc[curr.derived.category] = (acc[curr.derived.category] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+function formatDeadline(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeZone: "Asia/Kolkata",
+  }).format(parsed);
+}
 
-  const sortedCategories = Object.entries(categoryCounts)
-    .map(([cat, count]) => ({ category: cat, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 4);
+function MetricCard({ label, value, hint, accent = "neutral" }: MetricCardProps) {
+  return (
+    <article className={`metric-card metric-card--${accent}`}>
+      <div className="metric-copy">
+        <span className="metric-label">{label}</span>
+        <strong className="metric-value">{value}</strong>
+      </div>
+      <p className="metric-hint">{hint}</p>
+    </article>
+  );
+}
 
-  // Mailbox Health status counts
-  const healthyCount = mockClients.filter((c) => c.mailboxStatus === "Active").length;
-  const issueCount = mockClients.filter((c) => c.mailboxStatus !== "Active").length;
+function SystemCard({ label, value, hint, tone = "neutral", badge }: SystemCardProps) {
+  return (
+    <article className={`system-card system-card--${tone}`}>
+      <div className="system-card-top">
+        <span className="system-label">{label}</span>
+        {badge ? <span className="system-badge">{badge}</span> : null}
+      </div>
+      <strong className="system-value">{value}</strong>
+      {hint ? <p className="system-hint">{hint}</p> : null}
+    </article>
+  );
+}
 
-  const handleRefresh = () => {
-    setIsRefreshing(true);
-    setTimeout(() => {
-      setIsRefreshing(false);
-    }, 800);
-  };
+function Badge({
+  label,
+  tone = "neutral",
+}: {
+  label: string;
+  tone?: "neutral" | "success" | "warning" | "critical" | "review" | "category";
+}) {
+  return <span className={`overview-badge overview-badge--${tone}`}>{label}</span>;
+}
+
+export default async function OverviewPage() {
+  const now = new Date();
+  const data = await getOverviewDashboardData({ now });
+  const dateLabel = formatDateLabel(now);
+
+  const hasImportantActivity = data.importantActivity.length > 0;
+  const hasNoTodayEmails = data.metrics.emailsReceivedToday === 0;
+  const hasNoReviewItems = data.queue.review === 0;
+  const hasCheckpoint = Boolean(data.queue.latestSuccessfulIngestAt);
 
   return (
-    <div className="overview-container">
-      {/* ── Filter & Control Bar ── */}
-      <section className="filter-bar-card">
-        <div className="filter-group">
-          <div className="select-wrapper">
-            <label htmlFor="ca-select">CA Profile</label>
-            <select
-              id="ca-select"
-              value={selectedCA}
-              onChange={(e) => setSelectedCA(e.target.value)}
-            >
-              <option value="all">All CAs</option>
-              {mockCAs.map((ca) => (
-                <option key={ca.id} value={ca.id}>
-                  {ca.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="select-wrapper">
-            <label htmlFor="status-select">Mailbox Status</label>
-            <select
-              id="status-select"
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-            >
-              <option value="all">All Mailboxes</option>
-              <option value="healthy">Healthy Only</option>
-              <option value="issue">Needs Attention</option>
-            </select>
-          </div>
-
-          <div className="select-wrapper">
-            <label htmlFor="date-range-select">Date Range</label>
-            <select
-              id="date-range-select"
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
-            >
-              <option value="today">Today</option>
-              <option value="last_7_days">Last 7 Days</option>
-              <option value="last_30_days">Last 30 Days</option>
-              <option value="all_time">All Time</option>
-            </select>
+    <main className="overview-shell">
+      <header className="overview-header">
+        <div className="header-copy">
+          <span className="eyebrow">Live COO Overview</span>
+          <h1>Operations Overview</h1>
+          <p>Live email intake and client activity</p>
+        </div>
+        <div className="header-meta">
+          <div className="header-date">{dateLabel}</div>
+          <div className="header-chip-row">
+            <Badge label={`${data.metrics.classifiedToday} classified today`} tone="success" />
+            <Badge label={`${data.queue.review} in review`} tone="review" />
           </div>
         </div>
+      </header>
 
-        <div className="sync-info">
-          <span className="last-sync">
-            {isRefreshing ? "Refreshing feed..." : "Last synced: 2 mins ago"}
-          </span>
-          <button
-            className="btn btn-secondary btn-icon"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
-          >
-            <IconRefresh size={16} className={isRefreshing ? "spin-animation" : ""} />
-            Refresh Feed
-          </button>
+      <section className="section-block">
+        <div className="section-head">
+          <div>
+            <h2>Today</h2>
+            <p>Counts are based on received_at, with classified throughput shown separately.</p>
+          </div>
+        </div>
+        <div className="metric-grid">
+          <MetricCard
+            label="Emails Received Today"
+            value={data.metrics.emailsReceivedToday}
+            hint="Fresh intake from the tracker mailbox"
+            accent="neutral"
+          />
+          <MetricCard
+            label="Applications"
+            value={data.metrics.applicationReceivedToday}
+            hint="Incoming application_received emails"
+            accent="neutral"
+          />
+          <MetricCard
+            label="Interviews"
+            value={data.metrics.interviewInviteToday}
+            hint="Invite volume today"
+            accent="interview"
+          />
+          <MetricCard
+            label="Assessments"
+            value={data.metrics.assessmentToday}
+            hint="Assessment requests today"
+            accent="neutral"
+          />
+          <MetricCard
+            label="Offers"
+            value={data.metrics.jobOfferToday}
+            hint="Highest-priority activity"
+            accent="offer"
+          />
+          <MetricCard
+            label="Rejections"
+            value={data.metrics.rejectionToday}
+            hint="Closed opportunities"
+            accent="neutral"
+          />
+          <MetricCard
+            label="Recruiter Replies"
+            value={data.metrics.recruiterReplyToday}
+            hint="Reply volume today"
+            accent="neutral"
+          />
+          <MetricCard
+            label="Needs Review"
+            value={data.metrics.needsReview}
+            hint="Manual attention required"
+            accent="review"
+          />
         </div>
       </section>
 
-      {/* ── Metric Grid ── */}
-      <section className="metrics-grid">
-        <Link href="/applications" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconMail size={16} />
-            </span>
-            <span className="metric-title">Total Emails</span>
+      <section className="section-block">
+        <div className="section-head">
+          <div>
+            <h2>System Health</h2>
+            <p>Queue state and ingestion freshness for the tracker pipeline.</p>
           </div>
-          <div className="metric-value">{totalEmails}</div>
-          <div className="metric-trend text-muted">All synced headers</div>
-        </Link>
-
-        <Link href="/applications?category=application_received" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconApplications size={16} />
-            </span>
-            <span className="metric-title">Applications</span>
-          </div>
-          <div className="metric-value">{totalAppsCount}</div>
-          <div className="metric-trend text-success">Active submissions</div>
-        </Link>
-
-        <Link href="/applications?category=interview_invite" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconClients size={16} />
-            </span>
-            <span className="metric-title">Interviews</span>
-          </div>
-          <div className="metric-value">{interviewsCount}</div>
-          <div className="metric-trend text-success">Invites received</div>
-        </Link>
-
-        <Link href="/applications?category=assessment" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconAssessment size={16} />
-            </span>
-            <span className="metric-title">Assessments</span>
-          </div>
-          <div className="metric-value">{assessmentsCount}</div>
-          <div className="metric-trend text-pending">Deadlines pending</div>
-        </Link>
-
-        <Link href="/applications?category=rejection" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconRejection size={16} />
-            </span>
-            <span className="metric-title">Rejections</span>
-          </div>
-          <div className="metric-value">{rejectionsCount}</div>
-          <div className="metric-trend text-muted">Closed listings</div>
-        </Link>
-
-        <Link href="/review-queue" className="metric-card highlight-urgent">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconWarning size={16} />
-            </span>
-            <span className="metric-title">Review Required</span>
-          </div>
-          <div className="metric-value text-urgent">{reviewRequiredCount}</div>
-          <div className="metric-trend text-urgent font-bold">Needs CA action</div>
-        </Link>
+          <Link href="/dashboard" className="subtle-link">
+            Open technical dashboard
+          </Link>
+        </div>
+        <div className="system-grid">
+          <SystemCard label="Pending" value={data.queue.pending} tone="neutral" />
+          <SystemCard label="Processing" value={data.queue.processing} tone="neutral" />
+          <SystemCard label="Retrying" value={data.queue.retryScheduled} tone="warning" />
+          <SystemCard
+            label="Review Queue"
+            value={data.queue.review}
+            tone="review"
+            hint={`Classified today: ${data.metrics.classifiedToday}`}
+          />
+          <SystemCard
+            label="Dead Letter"
+            value={data.queue.deadLetter}
+            tone="critical"
+            badge={data.queue.deadLetter > 0 ? "Attention" : "Small"}
+          />
+          <SystemCard
+            label="Oldest Backlog Age"
+            value={formatBacklogAge(data.queue.oldestBacklogAgeMinutes)}
+            tone="warning"
+            hint="Oldest pending or retrying item in the queue"
+          />
+          <SystemCard
+            label="Latest Ingest Time"
+            value={
+              data.queue.latestSuccessfulIngestAt
+                ? formatReceivedAt(data.queue.latestSuccessfulIngestAt)
+                : "Not available yet"
+            }
+            tone={hasCheckpoint ? "success" : "neutral"}
+            hint={hasCheckpoint ? "Latest successful sync checkpoint" : "Checkpoint not available yet"}
+          />
+        </div>
       </section>
 
-      {/* ── Main Panel Grid ── */}
-      <div className="overview-main-grid">
-        {/* Left Side: Attention Needed & Recent Activity */}
-        <div className="main-left-column">
-          {/* Attention Needed */}
-          <div className="content-card">
-            <div className="card-header">
-              <h2>⚠️ Action Required Queue</h2>
-              <Link href="/review-queue" className="header-link">
-                View Review Queue →
-              </Link>
-            </div>
-            <div className="attention-list">
-              {attentionItems.map((item) => (
-                <div key={item.id} className="attention-item">
-                  <div className="attention-meta">
-                    <span className={`badge badge-${item.derived.category}`}>
-                      {item.derived.category.replace("_", " ")}
-                    </span>
-                    <span className="attention-client">{item.clientName}</span>
-                  </div>
-                  <h4 className="attention-subject">{item.subject}</h4>
-                  {item.derived.deadline && (
-                    <div className="attention-deadline">
-                      <span>Due: </span>
-                      <strong className="text-urgent">{item.derived.deadline}</strong>
-                    </div>
-                  )}
-                  <div className="attention-action">
-                    <span>Task: </span>
-                    {item.actionRequired}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Recent Email Activity */}
-          <div className="content-card">
-            <div className="card-header">
-              <h2>Recent Email Logs</h2>
-              <Link href="/applications" className="header-link">
-                View All Emails →
-              </Link>
-            </div>
-            <div className="table-wrapper">
-              <table className="ops-table">
-                <thead>
-                  <tr>
-                    <th>Client</th>
-                    <th>Subject</th>
-                    <th>Folder</th>
-                    <th>Category</th>
-                    <th>Confidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentEmails.map((email) => (
-                    <tr key={email.id} className="table-row-hover">
-                      <td>
-                        <div className="client-name-lbl">{email.clientName}</div>
-                        <div className="client-mailbox-lbl">{email.mailbox}</div>
-                      </td>
-                      <td className="cell-subject">{email.subject}</td>
-                      <td>{email.folderName}</td>
-                      <td>
-                        <span className={`badge badge-${email.derived.category}`}>
-                          {email.derived.category.replace("_", " ")}
-                        </span>
-                      </td>
-                      <td className="font-tabular">{(email.derived.confidence * 100).toFixed(0)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Mobile-Only Client Cards (Transform table for mobile) */}
-            <div className="mobile-only-cards">
-              {recentEmails.map((email) => (
-                <div key={email.id} className="mobile-client-card">
-                  <div className="mobile-card-header">
-                    <div>
-                      <div className="m-client-name">{email.clientName}</div>
-                      <div className="m-client-mailbox">{email.mailbox}</div>
-                    </div>
-                    <span className={`badge badge-${email.derived.category}`}>
-                      {email.derived.category.replace("_", " ")}
-                    </span>
-                  </div>
-                  <div className="m-card-subject">{email.subject}</div>
-                  <div className="m-card-meta">
-                    <span>Folder: <strong>{email.folderName}</strong></span>
-                    <span>Confidence: <strong>{(email.derived.confidence * 100).toFixed(0)}%</strong></span>
-                  </div>
-                </div>
-              ))}
-            </div>
+      <section className="section-block">
+        <div className="section-head">
+          <div>
+            <h2>Important Activity</h2>
+            <p>High-signal events only. No sender, subject, body, or raw headers.</p>
           </div>
         </div>
 
-        {/* Right Side: Charts & Quick Actions */}
-        <div className="main-right-column">
-          {/* Chart: Activity */}
-          <div className="content-card">
-            <h3>Email Volumes (Last 7 Days)</h3>
-            <div className="bar-chart-container">
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "65%" }}>
-                  <span className="bar-val">12</span>
-                </div>
-                <span className="bar-lbl">Wed</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "80%" }}>
-                  <span className="bar-val">15</span>
-                </div>
-                <span className="bar-lbl">Thu</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "45%" }}>
-                  <span className="bar-val">8</span>
-                </div>
-                <span className="bar-lbl">Fri</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "20%" }}>
-                  <span className="bar-val">3</span>
-                </div>
-                <span className="bar-lbl">Sat</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "15%" }}>
-                  <span className="bar-val">2</span>
-                </div>
-                <span className="bar-lbl">Sun</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "90%" }}>
-                  <span className="bar-val">18</span>
-                </div>
-                <span className="bar-lbl">Mon</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "75%" }}>
-                  <span className="bar-val">14</span>
-                </div>
-                <span className="bar-lbl">Tue</span>
-              </div>
-            </div>
+        {!hasImportantActivity ? (
+          <div className="empty-state">
+            <strong>No high-priority activity yet.</strong>
+            <p>Offer, interview, assessment, recruiter reply, follow-up, and review items will appear here.</p>
           </div>
-
-          {/* Mailbox Connection Health */}
-          <div className="content-card">
-            <h3>Mailbox Connection Status</h3>
-            <div className="health-distribution">
-              <div className="health-status-row">
-                <div className="status-indicator-green" />
-                <span className="status-label">Active & Healthy</span>
-                <span className="status-count font-tabular">{healthyCount}</span>
-              </div>
-              <div className="health-status-row">
-                <div className="status-indicator-orange" />
-                <span className="status-label">Needs Reconnection</span>
-                <span className="status-count font-tabular">{issueCount}</span>
-              </div>
-            </div>
-            <div className="health-progress-bar">
-              <div
-                className="progress-fill"
-                style={{ width: `${(healthyCount / (healthyCount + issueCount)) * 100}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Top Categories */}
-          <div className="content-card">
-            <h3>Top Email Categories</h3>
-            <div className="category-list">
-              {sortedCategories.map(({ category, count }) => (
-                <div key={category} className="category-row">
-                  <span className="category-name">{category.replace("_", " ")}</span>
-                  <div className="category-bar-wrapper">
-                    <div
-                      className="category-bar"
-                      style={{ width: `${(count / totalEmails) * 100}%` }}
-                    />
+        ) : (
+          <div className="activity-list">
+            {data.importantActivity.map((item) => {
+              const deadline = formatDeadline(item.deadline);
+              return (
+                <article className="activity-card" key={item.id}>
+                  <div className="activity-topline">
+                    <div className="badge-row">
+                      <Badge label={item.category ?? "unknown"} tone="category" />
+                      <Badge
+                        label={item.classificationStatus}
+                        tone={item.classificationStatus === "review" ? "review" : "neutral"}
+                      />
+                      <Badge label={item.priority} tone={item.priority === "review" ? "review" : "neutral"} />
+                    </div>
+                    <time className="activity-time" dateTime={item.receivedAt}>
+                      {formatReceivedAt(item.receivedAt)}
+                    </time>
                   </div>
-                  <span className="category-count font-tabular">{count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
 
-          {/* Quick Actions Panel */}
-          <div className="content-card">
-            <h3>Quick Operations Actions</h3>
-            <div className="quick-actions-grid">
-              <Link href="/applications" className="action-btn-link">
-                📁 Browse Applications
-              </Link>
-              <Link href="/review-queue" className="action-btn-link">
-                📥 Review Queue
-              </Link>
-              <Link href="/clients" className="action-btn-link">
-                👥 Clients & Mailboxes
-              </Link>
-              <Link href="/mailboxes" className="action-btn-link">
-                🔌 Connection Status
-              </Link>
-            </div>
+                  <div className="activity-identity">{item.originalRecipient ?? "Unmapped recipient"}</div>
+
+                  <div className="activity-meta">
+                    {deadline ? <span>Deadline: {deadline}</span> : null}
+                    {item.actionRequired ? <span>Action: {item.actionRequired}</span> : null}
+                  </div>
+
+                  {item.classificationStatus === "review" ? (
+                    <div className="review-note">
+                      <Badge label="Review" tone="review" />
+                      <p>{item.safeReason ?? "Classification reason redacted for safety."}</p>
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
           </div>
+        )}
+      </section>
+
+      <section className="footer-grid">
+        <div className="footer-card">
+          <h3>Operational notes</h3>
+          <ul>
+            <li>Tracker mailbox stays hidden from the client identity layer.</li>
+            <li>Review rows surface only safe reasons.</li>
+            <li>Dead letter remains visible, but visually small.</li>
+          </ul>
         </div>
-      </div>
+        <div className="footer-card">
+          <h3>Empty-state checks</h3>
+          <ul>
+            <li>{hasNoTodayEmails ? "No emails arrived today yet." : "Today has inbound email activity."}</li>
+            <li>{hasNoReviewItems ? "No review items are waiting." : "Review items are currently waiting."}</li>
+            <li>{hasCheckpoint ? "Latest ingest checkpoint is available." : "Latest ingest checkpoint is missing."}</li>
+          </ul>
+        </div>
+      </section>
 
-      <style jsx>{`
-        .overview-container {
+      <style>{`
+        .overview-shell {
           display: flex;
           flex-direction: column;
           gap: 24px;
         }
 
-        /* ── Filter Bar Card ── */
-        .filter-bar-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 16px 24px;
+        .overview-header {
           display: flex;
-          align-items: center;
+          align-items: flex-end;
           justify-content: space-between;
-          flex-wrap: wrap;
           gap: 16px;
+          padding: 24px;
+          border: 1px solid var(--border-gray);
+          border-radius: 20px;
+          background: var(--white);
           box-shadow: var(--card-shadow);
         }
 
-        .filter-group {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          flex-wrap: wrap;
-        }
-
-        .select-wrapper {
+        .header-copy {
           display: flex;
           flex-direction: column;
-          gap: 4px;
+          gap: 8px;
         }
 
-        .select-wrapper label {
+        .eyebrow {
           font-size: 0.75rem;
-          color: var(--text-muted);
-          font-weight: 600;
+          font-weight: 700;
+          letter-spacing: 0.12em;
           text-transform: uppercase;
+          color: var(--primary-blue);
         }
 
-        .select-wrapper select {
-          padding: 8px 12px;
-          border-radius: 6px;
-          border: 1px solid var(--border-gray);
-          background-color: var(--white);
+        .overview-header h1 {
+          margin: 0;
+          font-family: var(--font-space-grotesk), sans-serif;
+          font-size: clamp(2rem, 3.5vw, 3rem);
           color: var(--text-dark);
-          font-size: 0.875rem;
-          font-weight: 500;
-          outline: none;
-          min-width: 160px;
+          letter-spacing: -0.03em;
         }
 
-        .sync-info {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-        }
-
-        .last-sync {
-          font-size: 0.8125rem;
+        .overview-header p,
+        .section-head p,
+        .system-hint,
+        .metric-hint,
+        .empty-state p,
+        .activity-meta,
+        .footer-card li {
           color: var(--text-muted);
         }
 
-        .btn {
-          padding: 8px 16px;
-          font-size: 0.875rem;
-          font-weight: 600;
-          border-radius: 9999px;
-          border: none;
-          cursor: pointer;
-          transition: background-color 0.2s;
+        .header-meta {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 10px;
         }
 
-        .btn-secondary {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
+        .header-date {
+          font-size: 0.95rem;
+          color: var(--text-muted);
+          text-align: right;
+        }
+
+        .header-chip-row {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+        }
+
+        .section-block {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        .section-head {
+          display: flex;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 16px;
+        }
+
+        .section-head h2,
+        .footer-card h3 {
+          margin: 0;
+          font-family: var(--font-space-grotesk), sans-serif;
+          font-size: 1.3rem;
           color: var(--text-dark);
         }
 
-        .btn-secondary:hover {
-          background-color: var(--workspace-bg);
+        .subtle-link {
+          font-size: 0.875rem;
+          font-weight: 600;
+          color: var(--primary-blue);
         }
 
-        /* ── Metrics Grid ── */
-        .metrics-grid {
+        .metric-grid {
           display: grid;
-          grid-template-columns: repeat(6, 1fr);
+          grid-template-columns: repeat(4, minmax(0, 1fr));
           gap: 16px;
+        }
+
+        .metric-card,
+        .system-card,
+        .activity-card,
+        .footer-card,
+        .empty-state {
+          border: 1px solid var(--border-gray);
+          background: var(--white);
+          border-radius: 18px;
+          box-shadow: var(--card-shadow);
         }
 
         .metric-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 20px;
-          text-decoration: none;
-          color: inherit;
+          padding: 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          min-height: 140px;
+        }
+
+        .metric-card--offer {
+          border-color: rgba(16, 185, 129, 0.28);
+          background: linear-gradient(180deg, rgba(16, 185, 129, 0.08), var(--white));
+        }
+
+        .metric-card--interview {
+          border-color: rgba(245, 158, 11, 0.28);
+          background: linear-gradient(180deg, rgba(245, 158, 11, 0.08), var(--white));
+        }
+
+        .metric-card--review {
+          border-color: rgba(239, 68, 68, 0.24);
+          background: linear-gradient(180deg, rgba(239, 68, 68, 0.06), var(--white));
+        }
+
+        .metric-copy {
           display: flex;
           flex-direction: column;
           gap: 8px;
-          transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
-          box-shadow: var(--card-shadow);
         }
 
-        .metric-card:hover {
-          box-shadow: var(--card-shadow-hover);
-          border-color: var(--primary-blue);
-          transform: translateY(-2px);
-        }
-
-        .metric-card.highlight-urgent {
-          border-left: 4px solid var(--urgent-red);
-        }
-
-        .metric-meta {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .metric-icon {
-          font-size: 1.25rem;
-        }
-
-        .metric-title {
-          font-size: 0.8125rem;
-          font-weight: 600;
+        .metric-label,
+        .system-label {
+          font-size: 0.8rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
           color: var(--text-muted);
         }
 
         .metric-value {
-          font-size: 2rem;
-          font-weight: 700;
-          font-family: var(--font-display);
+          font-family: var(--font-space-grotesk), sans-serif;
+          font-size: clamp(2rem, 3vw, 2.6rem);
+          line-height: 1;
+          color: var(--text-dark);
         }
 
-        .metric-trend {
-          font-size: 0.75rem;
+        .metric-hint {
+          margin-top: auto;
+          font-size: 0.875rem;
+          line-height: 1.5;
         }
 
-        .text-success { color: var(--success-green); }
-        .text-pending { color: var(--pending-orange); }
-        .text-urgent { color: var(--urgent-red); }
-        .font-bold { font-weight: 700; }
-        .font-tabular { font-feature-settings: "tnum"; }
-
-        /* ── Main Content Grid ── */
-        .overview-main-grid {
+        .system-grid {
           display: grid;
-          grid-template-columns: 2fr 1fr;
-          gap: 24px;
-        }
-
-        .main-left-column,
-        .main-right-column {
-          display: flex;
-          flex-direction: column;
-          gap: 24px;
-          min-width: 0;
-        }
-
-        .content-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 24px;
-          box-shadow: var(--card-shadow);
-        }
-
-        .card-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 20px;
-        }
-
-        .card-header h2 {
-          font-size: 1.125rem;
-          font-weight: 700;
-        }
-
-        .header-link {
-          font-size: 0.8125rem;
-          color: var(--primary-blue);
-          text-decoration: none;
-          font-weight: 600;
-        }
-
-        .header-link:hover {
-          text-decoration: underline;
-        }
-
-        /* ── Attention List ── */
-        .attention-list {
-          display: flex;
-          flex-direction: column;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 16px;
         }
 
-        .attention-item {
-          padding: 16px;
-          border: 1px solid var(--border-gray);
-          border-radius: 8px;
-          background-color: var(--workspace-bg);
+        .system-card {
+          padding: 18px;
           display: flex;
           flex-direction: column;
-          gap: 6px;
+          gap: 10px;
+          min-height: 128px;
         }
 
-        .attention-meta {
+        .system-card-top {
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: 12px;
         }
 
-        .attention-client {
-          font-size: 0.8125rem;
-          font-weight: 600;
-          color: var(--text-muted);
-        }
-
-        .attention-subject {
-          font-size: 0.9375rem;
-          font-weight: 600;
+        .system-value {
+          font-family: var(--font-space-grotesk), sans-serif;
+          font-size: clamp(1.5rem, 2.2vw, 2rem);
           color: var(--text-dark);
         }
 
-        .attention-deadline {
-          font-size: 0.8125rem;
+        .system-card--warning {
+          border-color: rgba(245, 158, 11, 0.24);
         }
 
-        .attention-action {
-          font-size: 0.8125rem;
-          color: var(--text-muted);
-          border-top: 1px solid var(--border-gray);
-          padding-top: 6px;
-          margin-top: 4px;
+        .system-card--critical {
+          border-color: rgba(239, 68, 68, 0.24);
         }
 
-        /* ── Reusable Status Badges ── */
-        .badge {
-          display: inline-flex;
-          padding: 2px 8px;
-          border-radius: 4px;
-          font-size: 0.6875rem;
+        .system-card--success {
+          border-color: rgba(16, 185, 129, 0.24);
+        }
+
+        .system-card--review {
+          border-color: rgba(239, 68, 68, 0.24);
+        }
+
+        .system-badge {
+          font-size: 0.72rem;
           font-weight: 700;
+          padding: 4px 8px;
+          border-radius: 9999px;
+          background: #f8fafc;
+          color: var(--text-muted);
+        }
+
+        .system-hint {
+          font-size: 0.82rem;
+          line-height: 1.45;
+        }
+
+        .activity-list {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+        }
+
+        .activity-card {
+          padding: 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .activity-topline {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        .badge-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .overview-badge {
+          display: inline-flex;
+          align-items: center;
+          border-radius: 9999px;
+          padding: 5px 10px;
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 0.03em;
           text-transform: uppercase;
         }
 
-        .badge-interview_invite {
-          background-color: var(--pending-orange-bg);
-          color: var(--pending-orange);
+        .overview-badge--neutral {
+          background: #f3f4f6;
+          color: #475569;
         }
 
-        .badge-assessment {
-          background-color: var(--urgent-red-bg);
-          color: var(--urgent-red);
-        }
-
-        .badge-recruiter_reply,
-        .badge-follow_up_needed {
-          background-color: var(--pending-orange-bg);
-          color: var(--pending-orange);
-        }
-
-        .badge-application_received {
-          background-color: #e2e8f0;
-          color: var(--text-muted);
-        }
-
-        .badge-rejection {
-          background-color: #fee2e2;
-          color: #ef4444;
-        }
-
-        .badge-job_offer {
-          background-color: var(--success-green-bg);
+        .overview-badge--success {
+          background: var(--success-green-bg);
           color: var(--success-green);
         }
 
-        .badge-email_verification,
-        .badge-otp_verification {
-          background-color: #dbeafe;
-          color: var(--primary-blue);
+        .overview-badge--warning {
+          background: var(--pending-orange-bg);
+          color: var(--pending-orange);
         }
 
-        /* ── Operations Table ── */
-        .table-wrapper {
-          width: 100%;
-          overflow-x: auto;
+        .overview-badge--critical {
+          background: var(--urgent-red-bg);
+          color: var(--urgent-red);
         }
 
-        .ops-table {
-          width: 100%;
-          border-collapse: collapse;
-          text-align: left;
+        .overview-badge--review {
+          background: rgba(239, 68, 68, 0.12);
+          color: #dc2626;
+        }
+
+        .overview-badge--category {
+          background: #eef2ff;
+          color: #4f46e5;
+        }
+
+        .activity-time {
+          font-size: 0.85rem;
+          color: var(--text-muted);
+          white-space: nowrap;
+        }
+
+        .activity-identity {
+          font-family: var(--font-space-grotesk), sans-serif;
+          font-size: 1rem;
+          color: var(--text-dark);
+          letter-spacing: -0.01em;
+        }
+
+        .activity-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
           font-size: 0.875rem;
         }
 
-        .ops-table th {
-          padding: 12px 16px;
-          color: var(--text-muted);
-          font-weight: 600;
-          border-bottom: 1px solid var(--border-gray);
-        }
-
-        .ops-table td {
-          padding: 16px;
-          border-bottom: 1px solid var(--border-gray);
-        }
-
-        .table-row-hover:hover {
-          background-color: var(--workspace-bg);
-        }
-
-        .client-name-lbl {
-          font-weight: 600;
-          color: var(--text-dark);
-        }
-
-        .client-mailbox-lbl {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-          margin-top: 2px;
-        }
-
-        .cell-subject {
-          max-width: 260px;
-          white-space: nowrap;
-          text-overflow: ellipsis;
-          overflow: hidden;
-          font-weight: 500;
-        }
-
-        /* ── Bar Chart Styling (CSS-only) ── */
-        .bar-chart-container {
+        .review-note {
           display: flex;
-          align-items: flex-end;
-          justify-content: space-between;
-          height: 160px;
-          padding-top: 20px;
-          margin-top: 16px;
-        }
-
-        .chart-bar-y {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 8px;
-          height: 100%;
-          justify-content: flex-end;
-        }
-
-        .chart-bar {
-          background-color: var(--primary-blue);
-          border-radius: 4px 4px 0 0;
-          width: 24px;
-          position: relative;
-          display: flex;
-          justify-content: center;
-          transition: height 0.5s ease;
-        }
-
-        .bar-val {
-          position: absolute;
-          top: -20px;
-          font-size: 0.6875rem;
-          font-weight: 700;
-          color: var(--text-muted);
-        }
-
-        .bar-lbl {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-        }
-
-        /* ── Mailbox Health Status ── */
-        .health-distribution {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          margin: 16px 0;
-        }
-
-        .health-status-row {
-          display: flex;
-          align-items: center;
-          font-size: 0.875rem;
-        }
-
-        .status-indicator-green {
-          width: 8px;
-          height: 8px;
-          background-color: var(--success-green);
-          border-radius: 50%;
-          margin-right: 10px;
-        }
-
-        .status-indicator-orange {
-          width: 8px;
-          height: 8px;
-          background-color: var(--pending-orange);
-          border-radius: 50%;
-          margin-right: 10px;
-        }
-
-        .status-label {
-          color: var(--text-dark);
-          flex: 1;
-        }
-
-        .status-count {
-          font-weight: 600;
-          color: var(--text-muted);
-        }
-
-        .health-progress-bar {
-          height: 8px;
-          background-color: var(--border-gray);
-          border-radius: 4px;
-          overflow: hidden;
-        }
-
-        .progress-fill {
-          height: 100%;
-          background-color: var(--success-green);
-          border-radius: 4px;
-        }
-
-        /* ── Top Categories List ── */
-        .category-list {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          margin-top: 16px;
-        }
-
-        .category-row {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          font-size: 0.8125rem;
-        }
-
-        .category-name {
-          width: 110px;
-          font-weight: 600;
-          color: var(--text-dark);
-          text-transform: capitalize;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .category-bar-wrapper {
-          flex: 1;
-          height: 6px;
-          background-color: var(--border-gray);
-          border-radius: 3px;
-        }
-
-        .category-bar {
-          height: 100%;
-          background-color: var(--primary-blue);
-          border-radius: 3px;
-        }
-
-        .category-count {
-          font-weight: 600;
-          color: var(--text-muted);
-          width: 20px;
-          text-align: right;
-        }
-
-        /* ── Quick Actions Grid ── */
-        .quick-actions-grid {
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
+          align-items: flex-start;
           gap: 10px;
-          margin-top: 16px;
+          padding: 12px 14px;
+          border-radius: 14px;
+          background: rgba(239, 68, 68, 0.05);
+          border: 1px solid rgba(239, 68, 68, 0.12);
         }
 
-        .action-btn-link {
-          background-color: var(--workspace-bg);
-          border: 1px solid var(--border-gray);
-          border-radius: 8px;
-          padding: 12px;
-          text-decoration: none;
+        .review-note p {
+          margin: 0;
           color: var(--text-dark);
-          font-size: 0.8125rem;
-          font-weight: 600;
-          text-align: center;
-          transition: background-color 0.2s, border-color 0.2s;
+          line-height: 1.5;
         }
 
-        .action-btn-link:hover {
-          background-color: var(--white);
-          border-color: var(--primary-blue);
+        .empty-state {
+          padding: 24px;
         }
 
-        .mobile-only-cards {
-          display: none;
+        .empty-state strong {
+          display: block;
+          margin-bottom: 6px;
+          font-family: var(--font-space-grotesk), sans-serif;
+          font-size: 1rem;
+          color: var(--text-dark);
         }
 
-        /* ── Responsive Modifications ── */
-
-        /* Laptop (1024px - 1439px) */
-        @media (max-width: 1439px) {
-          .metrics-grid {
-            grid-template-columns: repeat(3, 1fr);
-          }
+        .footer-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 16px;
         }
 
-        /* Tablet (768px - 1023px) */
-        @media (max-width: 1023px) {
-          .overview-main-grid {
-            grid-template-columns: 1fr; /* Stack columns */
-          }
+        .footer-card {
+          padding: 18px;
         }
 
-        /* Mobile (Below 768px) */
-        @media (max-width: 767px) {
-          .metrics-grid {
-            grid-template-columns: repeat(2, 1fr);
+        .footer-card ul {
+          margin: 12px 0 0;
+          padding-left: 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        @media (max-width: 1024px) {
+          .metric-grid,
+          .system-grid,
+          .footer-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
 
-          .metric-card {
-            padding: 14px;
-          }
-
-          .metric-value {
-            font-size: 1.5rem;
-          }
-
-          .ops-table {
-            display: none; /* Hide squeezed table on mobile */
-          }
-
-          /* Show Mobile Client Cards instead of table */
-          .mobile-only-cards {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            margin-top: 16px;
-          }
-
-          .mobile-client-card {
-            background-color: var(--white);
-            border: 1px solid var(--border-gray);
-            border-radius: 8px;
-            padding: 16px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-          }
-
-          .mobile-card-header {
-            display: flex;
+          .overview-header {
             align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-          }
-
-          .mobile-card-header > div:first-child {
-            min-width: 0;
-            flex: 1;
-          }
-
-          .m-client-name {
-            font-weight: 700;
-            font-size: 0.875rem;
-            color: var(--text-dark);
-          }
-
-          .m-client-mailbox {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            word-break: break-all;
-            overflow-wrap: break-word;
-          }
-
-          .m-card-subject {
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-dark);
-            line-height: 1.4;
-          }
-
-          .m-card-meta {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            border-top: 1px solid var(--border-gray);
-            padding-top: 8px;
-          }
-
-          .quick-actions-grid {
-            grid-template-columns: 1fr; /* Full width actions */
-          }
-
-          .filter-bar-card {
             flex-direction: column;
-            align-items: stretch;
-            gap: 16px;
-            padding: 16px;
           }
 
-          .filter-group {
+          .header-meta {
+            align-items: flex-start;
+          }
+        }
+
+        @media (max-width: 640px) {
+          .metric-grid,
+          .system-grid,
+          .footer-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .overview-header,
+          .section-head,
+          .activity-topline {
             flex-direction: column;
-            align-items: stretch;
-            gap: 12px;
+            align-items: flex-start;
           }
 
-          .select-wrapper select {
-            width: 100%;
-          }
-
-          .sync-info {
-            width: 100%;
-            justify-content: space-between;
-            border-top: 1px solid var(--border-gray);
-            padding-top: 12px;
+          .activity-time {
+            white-space: normal;
           }
         }
       `}</style>
-    </div>
+    </main>
   );
 }

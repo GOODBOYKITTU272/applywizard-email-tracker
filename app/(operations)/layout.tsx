@@ -10,7 +10,6 @@ import {
   IconClients,
   IconMailboxes,
   IconReviewQueue,
-  IconCAPortfolio,
   IconMenu,
   IconClose,
   IconMore,
@@ -104,11 +103,6 @@ export default function OperationsLayout({
             icon={<IconReviewQueue size={20} />}
             label="Review Queue"
           />
-          <NavLink
-            href="/ca-portfolio"
-            icon={<IconCAPortfolio size={20} />}
-            label="CA Portfolio"
-          />
         </nav>
 
         <div className="sidebar-footer">
@@ -196,12 +190,6 @@ export default function OperationsLayout({
                 href="/review-queue"
                 icon={<IconReviewQueue size={20} />}
                 label="Review Queue"
-                onClick={() => setMobileMenuOpen(false)}
-              />
-              <NavLink
-                href="/ca-portfolio"
-                icon={<IconCAPortfolio size={20} />}
-                label="CA Portfolio"
                 onClick={() => setMobileMenuOpen(false)}
               />
             </nav>

@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <main className="hero-wrapper">
@@ -60,6 +62,9 @@ export default function Home() {
         <div className="hero-cta">
           <span className="cta-label">Run the dev server to get started:</span>
           <code className="cta-code">npm run dev</code>
+          <Link href="/overview" className="overview-link">
+            Open COO Overview
+          </Link>
         </div>
       </div>
 
@@ -313,6 +318,26 @@ export default function Home() {
         .cta-code:hover {
           background: rgba(108, 99, 255, 0.2);
           box-shadow: 0 0 36px rgba(108, 99, 255, 0.4);
+        }
+        .overview-link {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          margin-top: 4px;
+          padding: 10px 18px;
+          border-radius: 9999px;
+          border: 1px solid rgba(110, 231, 183, 0.24);
+          background: rgba(110, 231, 183, 0.08);
+          color: #d1fae5;
+          font-family: 'Inter', sans-serif;
+          font-size: 0.9rem;
+          font-weight: 600;
+          transition: transform 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+        }
+        .overview-link:hover {
+          background: rgba(110, 231, 183, 0.14);
+          border-color: rgba(110, 231, 183, 0.4);
+          transform: translateY(-1px);
         }
       `}</style>
     </main>
