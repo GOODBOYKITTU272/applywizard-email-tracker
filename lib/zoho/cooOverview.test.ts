@@ -218,6 +218,8 @@ describe("getOverviewDashboardData", () => {
           classification_status: "pending",
           confidence: null,
           received_at: "2026-06-30T03:00:00.000Z",
+          first_seen_at: "2026-06-30T11:00:00.000Z",
+          created_at: "2026-06-30T11:00:00.000Z",
           classified_at: null,
           deadline: null,
           action_required: null,
@@ -449,6 +451,112 @@ describe("getOverviewDashboardData", () => {
     expect(reviewItem).not.toHaveProperty("body");
     expect(reviewItem).not.toHaveProperty("verification_link");
     expect(data.queue.latestSuccessfulIngestAt).toBeNull();
+  });
+
+  it("uses first_seen_at instead of received_at for backlog age", async () => {
+    const { supabase } = createSupabaseMock(
+      [
+        {
+          id: "row-old-mail",
+          original_recipient: "client-old@example.test",
+          category: "application_received",
+          classification_status: "pending",
+          confidence: null,
+          received_at: "2026-06-23T03:00:00.000Z",
+          first_seen_at: "2026-06-30T11:00:00.000Z",
+          created_at: "2026-06-30T11:00:00.000Z",
+          classified_at: null,
+          deadline: null,
+          action_required: null,
+          reason: null,
+        },
+      ],
+      null,
+    );
+
+    const { getOverviewDashboardData } = await import("./cooOverview");
+    const data = await getOverviewDashboardData({
+      supabase: supabase as never,
+      now: new Date("2026-06-30T12:00:00.000Z"),
+      mailboxEmail: "tracker@applywizard.ai",
+    });
+
+    expect(data.queue.oldestBacklogAgeMinutes).toBe(60);
+  });
+
+  it("ignores classified, review, and dead_letter rows for backlog age", async () => {
+    const { supabase } = createSupabaseMock(
+      [
+        {
+          id: "row-pending",
+          original_recipient: "client-pending@example.test",
+          category: "application_received",
+          classification_status: "pending",
+          confidence: null,
+          received_at: "2026-06-20T00:00:00.000Z",
+          first_seen_at: "2026-06-30T11:30:00.000Z",
+          created_at: "2026-06-30T11:30:00.000Z",
+          classified_at: null,
+          deadline: null,
+          action_required: null,
+          reason: null,
+        },
+        {
+          id: "row-classified",
+          original_recipient: "client-classified@example.test",
+          category: "job_offer",
+          classification_status: "classified",
+          confidence: 0.95,
+          received_at: "2026-06-01T00:00:00.000Z",
+          first_seen_at: "2026-06-01T00:00:00.000Z",
+          created_at: "2026-06-01T00:00:00.000Z",
+          classified_at: "2026-06-01T01:00:00.000Z",
+          deadline: null,
+          action_required: null,
+          reason: null,
+        },
+        {
+          id: "row-review",
+          original_recipient: "client-review@example.test",
+          category: "unknown",
+          classification_status: "review",
+          confidence: 0.55,
+          received_at: "2026-06-01T00:00:00.000Z",
+          first_seen_at: "2026-06-01T00:00:00.000Z",
+          created_at: "2026-06-01T00:00:00.000Z",
+          classified_at: "2026-06-01T01:00:00.000Z",
+          deadline: null,
+          action_required: null,
+          reason: SAFE_REASON_FALLBACK,
+        },
+        {
+          id: "row-dead-letter",
+          original_recipient: "client-dead@example.test",
+          category: "unknown",
+          classification_status: "dead_letter",
+          confidence: 0.2,
+          received_at: "2026-06-01T00:00:00.000Z",
+          first_seen_at: "2026-06-01T00:00:00.000Z",
+          created_at: "2026-06-01T00:00:00.000Z",
+          classified_at: "2026-06-01T01:00:00.000Z",
+          deadline: null,
+          action_required: null,
+          reason: null,
+        },
+      ],
+      null,
+    );
+
+    const { getOverviewDashboardData } = await import("./cooOverview");
+    const data = await getOverviewDashboardData({
+      supabase: supabase as never,
+      now: new Date("2026-06-30T12:00:00.000Z"),
+      mailboxEmail: "tracker@applywizard.ai",
+    });
+
+    expect(data.queue.oldestBacklogAgeMinutes).toBe(30);
+    expect(data.queue.review).toBe(1);
+    expect(data.queue.deadLetter).toBe(1);
   });
 
   it("does not expose CA Portfolio in the operations navigation source", () => {

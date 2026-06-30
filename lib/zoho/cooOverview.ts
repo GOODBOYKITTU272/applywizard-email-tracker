@@ -12,14 +12,6 @@ const IMPORTANT_CATEGORIES = [
   "follow_up_needed",
 ] as const;
 
-const QUEUE_STATUSES = [
-  "pending",
-  "processing",
-  "retry_scheduled",
-  "review",
-  "dead_letter",
-] as const;
-
 const MAX_ACTIVITY_ITEMS = 8;
 const SAFE_REASON_FALLBACK = "Classification reason redacted for safety.";
 const ACTIVITY_PRIORITY = {
@@ -81,6 +73,8 @@ interface EmailRow {
   classification_status: string | null;
   confidence: number | null;
   received_at: string | null;
+  first_seen_at: string | null;
+  created_at: string | null;
   classified_at: string | null;
   deadline: string | null;
   action_required: string | null;
@@ -126,6 +120,10 @@ function minutesBetween(now: Date, previousIso: string | null): number | null {
   if (Number.isNaN(previous.getTime())) return null;
   const delta = Math.max(0, now.getTime() - previous.getTime());
   return Math.floor(delta / 60000);
+}
+
+function backlogAgeTimestamp(row: Pick<EmailRow, "first_seen_at" | "created_at">): string | null {
+  return toIsoDate(row.first_seen_at ?? row.created_at ?? null);
 }
 
 function formatBacklogAge(minutes: number | null): string {
@@ -226,7 +224,7 @@ async function fetchRows(
 ): Promise<EmailRow[]> {
   const query = build(
     supabase.from("zoho_email_metadata").select(
-      "id,original_recipient,category,classification_status,confidence,received_at,classified_at,deadline,action_required,reason",
+      "id,original_recipient,category,classification_status,confidence,received_at,first_seen_at,created_at,classified_at,deadline,action_required,reason",
     ),
   );
   const result = await query.limit(MAX_ACTIVITY_ITEMS * 2);
@@ -234,6 +232,21 @@ async function fetchRows(
     console.error("[Overview] Fetch query failed:", result.error.message);
     return [];
   }
+  return (result.data ?? []) as EmailRow[];
+}
+
+async function fetchBacklogRows(supabase: SupabaseLike): Promise<EmailRow[]> {
+  const result = await supabase
+    .from("zoho_email_metadata")
+    .select("first_seen_at,created_at,classification_status")
+    .in("classification_status", ["pending", "processing", "retry_scheduled"])
+    .limit(1000);
+
+  if (result.error) {
+    console.error("[Overview] Backlog query failed:", result.error.message);
+    return [];
+  }
+
   return (result.data ?? []) as EmailRow[];
 }
 
@@ -343,15 +356,13 @@ export async function getOverviewDashboardData(args?: {
   const recruiterReplyToday = todayRows.filter((row) => row.category === "recruiter_reply").length;
   const followUpNeededToday = todayRows.filter((row) => row.category === "follow_up_needed").length;
 
-  const oldestBacklogQuery = supabase
-    .from("zoho_email_metadata")
-    .select("received_at")
-    .in("classification_status", [...QUEUE_STATUSES.filter((status) => status !== "dead_letter")])
-    .order("received_at", { ascending: true });
-  const oldestBacklogResult = await oldestBacklogQuery.limit(1);
-  const oldestBacklogReceivedAt = oldestBacklogResult.error
-    ? null
-    : oldestBacklogResult.data?.[0]?.received_at ?? null;
+  const backlogRows = await fetchBacklogRows(supabase);
+  const oldestBacklogTimestamp = backlogRows.reduce<string | null>((oldest, row) => {
+    const candidate = backlogAgeTimestamp(row);
+    if (!candidate) return oldest;
+    if (!oldest) return candidate;
+    return new Date(candidate).getTime() < new Date(oldest).getTime() ? candidate : oldest;
+  }, null);
 
   const [importantRows, latestSuccessfulIngestAt] = await Promise.all([
     Promise.all([
@@ -411,7 +422,7 @@ export async function getOverviewDashboardData(args?: {
     retryScheduled,
     review,
     deadLetter,
-    oldestBacklogAgeMinutes: minutesBetween(now, oldestBacklogReceivedAt),
+    oldestBacklogAgeMinutes: minutesBetween(now, oldestBacklogTimestamp),
     latestSuccessfulIngestAt,
   };
 
