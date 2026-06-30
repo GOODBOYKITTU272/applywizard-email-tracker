@@ -318,7 +318,8 @@ function normalizeEmail(value: string | null | undefined): string {
 }
 
 function clientKeySecret(): Buffer {
-  const secret = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.CRON_SECRET;
+  const secret = process.env.COO_CLIENT_KEY_SECRET
+    ?? (process.env.NODE_ENV === "production" ? undefined : process.env.CRON_SECRET);
   if (!secret && process.env.NODE_ENV !== "test") {
     throw new Error("COO client key secret is not configured.");
   }

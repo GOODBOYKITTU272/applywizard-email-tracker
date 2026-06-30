@@ -100,6 +100,30 @@ describe("cooWorkspace", () => {
     expect(resolveClientRecipient("c_Y2xpZW50LW9uZUBleGFtcGxlLnRlc3Q")).toBeNull();
   });
 
+  it("does not use SUPABASE_SERVICE_ROLE_KEY for client key encryption", async () => {
+    const { buildClientKey, resolveClientRecipient } = await import("./cooWorkspace");
+    const previousCooSecret = process.env.COO_CLIENT_KEY_SECRET;
+    const previousCronSecret = process.env.CRON_SECRET;
+    const previousServiceRole = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    try {
+      delete process.env.COO_CLIENT_KEY_SECRET;
+      delete process.env.CRON_SECRET;
+      process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-secret-one";
+      const key = buildClientKey("service-role-ignored@example.test");
+
+      process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role-secret-two";
+      expect(resolveClientRecipient(key)).toBe("service-role-ignored@example.test");
+    } finally {
+      if (previousCooSecret === undefined) delete process.env.COO_CLIENT_KEY_SECRET;
+      else process.env.COO_CLIENT_KEY_SECRET = previousCooSecret;
+      if (previousCronSecret === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = previousCronSecret;
+      if (previousServiceRole === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+      else process.env.SUPABASE_SERVICE_ROLE_KEY = previousServiceRole;
+    }
+  });
+
   it("overview aggregates exclude dead-letter rows from business counts and keep safe fields only", async () => {
     const { getOverviewWorkspaceData } = await import("./cooWorkspace");
     const supabase = createSupabaseMock(
