@@ -548,6 +548,12 @@ describe("Phase 3D dry-run and mailbox guardrails (decision logic)", () => {
       expect(src).toContain('classification.needs_human_review ? "review" : "classified"');
     });
 
+    it("sanitizes unsafe AI reasons before persistence", () => {
+      const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
+      expect(src).toContain("sanitizeReason");
+      expect(src).toContain("reason: safeReason");
+    });
+
     it("failure path persists only fixed safe messages, never raw exception text", () => {
       const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
       expect(src).toContain("getSafeProcessingError");

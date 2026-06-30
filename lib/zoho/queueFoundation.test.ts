@@ -162,4 +162,18 @@ describe("queueFoundation", () => {
     expect(migration).toContain("classification_status = 'processing'");
     expect(migration).toContain("for update skip locked");
   });
+
+  it("corrective reason migration only redacts unsafe reasons and preserves classification fields", () => {
+    const migration = readFileSync(
+      resolve(__dirname, "../../supabase/migrations/202606300002_redact_unsafe_reasons.sql"),
+      "utf8",
+    );
+
+    expect(migration).toContain("set reason = 'Classification reason redacted for safety.'");
+    expect(migration).toContain("where reason is not null");
+    expect(migration).not.toMatch(/set\s+category\s*=/i);
+    expect(migration).not.toMatch(/set\s+confidence\s*=/i);
+    expect(migration).not.toMatch(/set\s+classification_status\s*=/i);
+    expect(migration).not.toMatch(/set\s+classifier_source\s*=/i);
+  });
 });

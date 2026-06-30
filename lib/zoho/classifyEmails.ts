@@ -14,6 +14,7 @@ import { classifyEmail } from "@/lib/classify/emailClassification";
 import { tryRegexExtract } from "@/lib/classify/regexExtractor";
 import { classifyWithAI } from "@/lib/classify/aiClassifier";
 import { extractOriginalRecipient } from "@/lib/classify/extractRecipient";
+import { sanitizeReason } from "@/lib/classify/sanitizeReason";
 import {
   claimEmailsForClassification,
   getRetryDisposition,
@@ -655,6 +656,9 @@ export async function classifyEmails(
       const parsedDeadline = isValidISODate(classification.deadline)
         ? classification.deadline
         : null;
+      const safeReason = sanitizeReason(
+        (classification as { reason?: string }).reason ?? null,
+      );
       const finalizedAt = new Date().toISOString();
       const didUpdate = await updateClaimedEmail(
         supabase as unknown as Parameters<typeof updateClaimedEmail>[0],
@@ -670,7 +674,7 @@ export async function classifyEmails(
             action_required: classification.action_required,
             deadline: parsedDeadline,
             priority: (classification as { priority?: string }).priority ?? null,
-            reason: (classification as { reason?: string }).reason ?? null,
+            reason: safeReason,
             classifier_source,
             // routing fields — client_id always null until real clients table exists
             original_recipient: routingResult.originalRecipient,
