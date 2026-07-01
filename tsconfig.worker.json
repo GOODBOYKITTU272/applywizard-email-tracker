@@ -14,6 +14,7 @@
   },
   "include": [
     "scripts/worker-once.ts",
+    "worker/index.ts",
     "lib/worker-core/**/*.ts",
     "lib/zoho/syncEmails.ts",
     "lib/zoho/classifyEmails.ts",
