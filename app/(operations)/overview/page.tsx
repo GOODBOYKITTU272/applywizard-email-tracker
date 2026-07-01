@@ -195,9 +195,9 @@ export default async function OverviewPage({ searchParams }: { searchParams: Sea
       >
         <div className="coo-metric-grid">
           <MetricCard label="Total Emails" value={data.metrics.totalEmails} hint="Selected business window" tone="neutral" />
-          <MetricCard label="New Emails" value={data.metrics.newEmails} hint="Based on first_seen_at" tone="neutral" />
+          <MetricCard label="New Emails" value={data.metrics.newEmails} hint="Based on when the email entered the system" tone="neutral" />
           <MetricCard label="Pending Classification" value={data.metrics.pendingClassification} hint="Awaiting work" tone="warning" />
-          <MetricCard label="Classified" value={data.metrics.classifiedToday} hint="Based on classified_at" tone="success" />
+          <MetricCard label="Classified" value={data.metrics.classifiedToday} hint="Based on when classification finished" tone="success" />
           <MetricCard label="Review Queue" value={data.metrics.review} hint="Needs human review" tone="review" />
           <MetricCard label="Applications" value={data.metrics.applications} hint="application_received" tone="neutral" />
           <MetricCard label="Interviews" value={data.metrics.interviews} hint="Highest-signal follow up" tone="interview" />
@@ -211,11 +211,11 @@ export default async function OverviewPage({ searchParams }: { searchParams: Sea
 
       <SectionBlock
         title="Master Client Tracking"
-        subtitle="One row per original_recipient. Tracker mailbox is hidden from the client identity surface."
+        subtitle="One row per client mailbox. The tracker mailbox is hidden from the client identity surface."
       >
         {!hasRows ? (
           <EmptyState
-            title="No client rows for the selected filters."
+            title="No clients match the selected filters."
             description="Try a wider date range or switch the stage filter to All."
           />
         ) : (
@@ -313,15 +313,15 @@ export default async function OverviewPage({ searchParams }: { searchParams: Sea
             <MetricCard label="Retry Scheduled" value={data.metrics.retryScheduled} hint="Waiting for next attempt" tone="warning" />
             <MetricCard label="Review" value={data.metrics.review} hint="Human review required" tone="review" />
             <MetricCard label="Dead Letter" value={data.metrics.deadLetter} hint="Failed safely" tone="critical" />
-            <MetricCard label="Oldest Backlog Age" value={data.metrics.oldestBacklogAgeMinutes === null ? "—" : `${data.metrics.oldestBacklogAgeMinutes}m`} hint="first_seen_at or created_at" tone="warning" />
-            <MetricCard label="Latest Successful Ingest" value={latestIngest} hint="zoho_sync_checkpoints" tone={data.metrics.latestSuccessfulIngestAt ? "success" : "neutral"} />
-            <MetricCard label="Current Processing" value={data.metrics.currentProcessingCount} hint="Live workers claiming rows" tone="neutral" />
+            <MetricCard label="Oldest Backlog Age" value={data.metrics.oldestBacklogAgeMinutes === null ? "—" : `${data.metrics.oldestBacklogAgeMinutes}m`} hint="Based on when the email entered the system" tone="warning" />
+            <MetricCard label="Latest Successful Ingest" value={latestIngest} hint="From the tracker mailbox" tone={data.metrics.latestSuccessfulIngestAt ? "success" : "neutral"} />
+            <MetricCard label="Current Processing" value={data.metrics.currentProcessingCount} hint="Emails currently being processed" tone="neutral" />
           </div>
         </SectionBlock>
 
         <SectionBlock
           title="Important Activity"
-          subtitle="High-signal events only. No sender, subject, body, or raw headers."
+          subtitle="High-signal events only. No private message content is shown."
         >
           {!hasActivity ? (
             <EmptyState
@@ -344,7 +344,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Sea
                         {formatDateTime(item.receivedAt)}
                       </time>
                     </div>
-                    <div className="coo-activity-recipient">{item.originalRecipient ?? "Unmapped recipient"}</div>
+                    <div className="coo-activity-recipient">{item.originalRecipient ?? "Client mailbox not identified"}</div>
                     <div className="coo-activity-meta">
                       {deadline ? <span>Deadline: {deadline}</span> : null}
                       {item.actionRequired ? <span>Action: {item.actionRequired}</span> : null}

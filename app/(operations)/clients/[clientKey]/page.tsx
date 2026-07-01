@@ -163,7 +163,7 @@ export default async function ClientDetailPage({
       <SectionBlock title="Quick State Summary" subtitle="Current queue state, urgency, and email volume for this client.">
         <div className="coo-metric-grid coo-metric-grid--client-detail">
           <MetricCard label="Total Emails" value={summary.totalEmails} hint="Selected range" tone="neutral" />
-          <MetricCard label="New Emails" value={summary.newEmails} hint="first_seen_at" tone="neutral" />
+          <MetricCard label="New Emails" value={summary.newEmails} hint="Based on when the email entered the system" tone="neutral" />
           <MetricCard label="Queue State" value={summary.queueState} hint="Current operational state" tone="review" />
           <MetricCard label="Urgency" value={summary.urgency} hint="Highest signal present" tone={summary.urgency === "offer" ? "offer" : summary.urgency === "interview" ? "interview" : summary.urgency === "assessment" ? "assessment" : "review"} />
         </div>

@@ -25,7 +25,7 @@ export default async function OperationsPage() {
           <span className="coo-page__eyebrow">Operations</span>
           <h1 className="coo-page__title">Queue Health and Backlog Diagnostics</h1>
           <p className="coo-page__subtitle">
-            Live truth for the queue. Worker health remains a placeholder until a heartbeat exists.
+            Live queue health for email processing. Detailed processing health will appear when heartbeat reporting is available.
           </p>
         </div>
         <div className="coo-page__meta">
@@ -37,24 +37,24 @@ export default async function OperationsPage() {
       <SectionBlock title="Queue Cards" subtitle="Pending, processing, retries, review, and dead letters.">
         <div className="coo-metric-grid coo-metric-grid--operations">
           <MetricCard label="Pending" value={data.pending} hint="Awaiting classification" tone="warning" />
-          <MetricCard label="Processing" value={data.processing} hint="Currently claimed" tone="neutral" />
+          <MetricCard label="Processing" value={data.processing} hint="Currently in progress" tone="neutral" />
           <MetricCard label="Retry Scheduled" value={data.retryScheduled} hint="Waiting for next attempt" tone="warning" />
           <MetricCard label="Review" value={data.review} hint="Human review" tone="review" />
           <MetricCard label="Dead Letter" value={data.deadLetter} hint="Stopped safely" tone="critical" />
-          <MetricCard label="Oldest Backlog Age" value={data.oldestBacklogAgeMinutes === null ? "—" : `${data.oldestBacklogAgeMinutes}m`} hint="first_seen_at or created_at" tone="warning" />
-          <MetricCard label="Latest Successful Ingest" value={formatDateTime(data.latestSuccessfulIngestAt)} hint="zoho_sync_checkpoints" tone={data.latestSuccessfulIngestAt ? "success" : "neutral"} />
-          <MetricCard label="Current Processing Count" value={data.currentProcessingCount} hint="Live workers in flight" tone="neutral" />
+          <MetricCard label="Oldest Backlog Age" value={data.oldestBacklogAgeMinutes === null ? "—" : `${data.oldestBacklogAgeMinutes}m`} hint="Based on when the email entered the system" tone="warning" />
+          <MetricCard label="Latest Successful Ingest" value={formatDateTime(data.latestSuccessfulIngestAt)} hint="From the tracker mailbox" tone={data.latestSuccessfulIngestAt ? "success" : "neutral"} />
+          <MetricCard label="Current Processing Count" value={data.currentProcessingCount} hint="Emails currently being processed" tone="neutral" />
         </div>
       </SectionBlock>
 
       <div className="coo-operations-grid">
-        <SectionBlock title="Oldest Pending" subtitle="Oldest pending rows claimed first.">
+        <SectionBlock title="Oldest Pending" subtitle="Oldest pending emails are shown first.">
           {data.oldestPending.length ? (
             <div className="coo-row-list">
               {data.oldestPending.map((row) => (
                 <article key={row.id} className="coo-row-card">
                   <div className="coo-row-card__top">
-                    <strong>{row.originalRecipient ?? "Unmapped recipient"}</strong>
+                    <strong>{row.originalRecipient ?? "Client mailbox not identified"}</strong>
                     <CooBadge label="Pending" tone="warning" />
                   </div>
                   <div className="coo-row-card__meta">
@@ -65,17 +65,17 @@ export default async function OperationsPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="No pending rows." description="The pending queue is currently clear." />
+            <EmptyState title="No pending emails." description="The pending queue is currently clear." />
           )}
         </SectionBlock>
 
-        <SectionBlock title="Oldest Review" subtitle="Rows awaiting human attention.">
+        <SectionBlock title="Oldest Review" subtitle="Emails awaiting human attention.">
           {data.oldestReview.length ? (
             <div className="coo-row-list">
               {data.oldestReview.map((row) => (
                 <article key={row.id} className="coo-row-card">
                   <div className="coo-row-card__top">
-                    <strong>{row.originalRecipient ?? "Unmapped recipient"}</strong>
+                    <strong>{row.originalRecipient ?? "Client mailbox not identified"}</strong>
                     <CooBadge label="Review" tone="review" />
                   </div>
                   <div className="coo-row-card__meta">
@@ -88,17 +88,17 @@ export default async function OperationsPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="No review rows." description="Human review queue is empty." />
+            <EmptyState title="No review emails." description="Human review queue is empty." />
           )}
         </SectionBlock>
 
-        <SectionBlock title="Retry Scheduled" subtitle="Rows queued for the next attempt.">
+        <SectionBlock title="Retry Scheduled" subtitle="Emails waiting for the next attempt.">
           {data.retryScheduledRows.length ? (
             <div className="coo-row-list">
               {data.retryScheduledRows.map((row) => (
                 <article key={row.id} className="coo-row-card">
                   <div className="coo-row-card__top">
-                    <strong>{row.originalRecipient ?? "Unmapped recipient"}</strong>
+                    <strong>{row.originalRecipient ?? "Client mailbox not identified"}</strong>
                     <CooBadge label="Retrying" tone="warning" />
                   </div>
                   <div className="coo-row-card__meta">
@@ -111,7 +111,7 @@ export default async function OperationsPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="No retry rows." description="There are no scheduled retries right now." />
+            <EmptyState title="No retry emails." description="There are no scheduled retries right now." />
           )}
         </SectionBlock>
 
@@ -121,7 +121,7 @@ export default async function OperationsPage() {
               {data.deadLetterRows.map((row) => (
                 <article key={row.id} className="coo-row-card">
                   <div className="coo-row-card__top">
-                    <strong>{row.originalRecipient ?? "Unmapped recipient"}</strong>
+                    <strong>{row.originalRecipient ?? "Client mailbox not identified"}</strong>
                     <CooBadge label="Dead Letter" tone="critical" />
                   </div>
                   <div className="coo-row-card__meta">
@@ -134,14 +134,14 @@ export default async function OperationsPage() {
               ))}
             </div>
           ) : (
-            <EmptyState title="No dead-letter rows." description="All retryable rows are still active." />
+            <EmptyState title="No dead-letter emails." description="All retryable emails are still active." />
           )}
         </SectionBlock>
       </div>
 
-      <SectionBlock title="Worker Health" subtitle="Placeholder until Render worker heartbeat is available.">
+      <SectionBlock title="Processing Health" subtitle="Detailed heartbeat reporting is not available yet.">
         <EmptyState
-          title="Worker health will appear when Render worker heartbeat is available."
+          title="Processing health will appear when heartbeat reporting is available."
           description="This phase keeps the field neutral instead of faking uptime."
           action={<Link href="/dashboard" className="coo-inline-link">Open technical dashboard</Link>}
         />

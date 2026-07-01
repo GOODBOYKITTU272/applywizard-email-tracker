@@ -120,12 +120,12 @@ export default async function ClientsPage({ searchParams }: { searchParams: Sear
           <span className="coo-page__eyebrow">Clients</span>
           <h1 className="coo-page__title">Client-Centric Operations List</h1>
           <p className="coo-page__subtitle">
-            Temporary identity is original_recipient until Leads API mapping exists.
+            Temporary identity uses the client mailbox until Leads API mapping exists.
           </p>
         </div>
         <div className="coo-page__meta">
           <CooBadge label={data.dateRange.label} tone="neutral" />
-          <CooBadge label={data.rows.length ? `${data.rows.length} rows` : "No rows"} tone={data.rows.length ? "success" : "neutral"} />
+          <CooBadge label={data.rows.length ? `${data.rows.length} clients` : "No clients"} tone={data.rows.length ? "success" : "neutral"} />
         </div>
       </header>
 
@@ -168,7 +168,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: Sear
           <input type="hidden" name="to" value={to ?? ""} />
           <label>
             <span>Search client identity</span>
-            <input type="search" name="q" defaultValue={q} placeholder="Search original_recipient..." />
+            <input type="search" name="q" defaultValue={q} placeholder="Search client mailbox..." />
           </label>
           <button type="submit" className="coo-action-button">Search</button>
         </form>
@@ -176,9 +176,9 @@ export default async function ClientsPage({ searchParams }: { searchParams: Sear
 
       <SectionBlock title="Client Summary" subtitle="Overview of the selected client window.">
         <div className="coo-metric-grid coo-metric-grid--clients">
-          <MetricCard label="Clients" value={totalClients} hint="Grouped by original_recipient" tone="neutral" />
+          <MetricCard label="Clients" value={totalClients} hint="Grouped by client mailbox" tone="neutral" />
           <MetricCard label="Urgent Clients" value={urgentClients} hint="Offers, interviews, assessments, review" tone="offer" />
-          <MetricCard label="Review Needed" value={reviewClients} hint="Rows with human review" tone="review" />
+          <MetricCard label="Review Needed" value={reviewClients} hint="Emails needing human review" tone="review" />
           <MetricCard label="Dead Letter Clients" value={deadLetterClients} hint="Visible in queue filters" tone="critical" />
         </div>
       </SectionBlock>

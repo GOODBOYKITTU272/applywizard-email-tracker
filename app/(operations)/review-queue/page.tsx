@@ -45,15 +45,15 @@ export default async function ReviewQueuePage() {
       <SectionBlock title="Review Summary" subtitle="Human review only. Read-only in Phase 1.">
         <div className="coo-metric-grid coo-metric-grid--review">
           <MetricCard label="Review Items" value={data.count} hint="classification_status = review" tone="review" />
-          <MetricCard label="Open Client Actions" value={data.rows.filter((row) => row.actionRequired).length} hint="Rows with a safe action hint" tone="warning" />
-          <MetricCard label="Deadline Rows" value={data.rows.filter((row) => row.deadline).length} hint="Items with a deadline" tone="assessment" />
+          <MetricCard label="Open Client Actions" value={data.rows.filter((row) => row.actionRequired).length} hint="Emails with a safe action hint" tone="warning" />
+          <MetricCard label="Deadlines" value={data.rows.filter((row) => row.deadline).length} hint="Items with a deadline" tone="assessment" />
           <MetricCard label="High Confidence" value={data.rows.filter((row) => typeof row.confidence === "number" && row.confidence >= 0.75).length} hint="Confidence at or above threshold" tone="success" />
         </div>
       </SectionBlock>
 
-      <SectionBlock title="Review Rows" subtitle="Safe fields only. No mutating action buttons in this phase.">
+      <SectionBlock title="Review Queue" subtitle="Safe fields only. No mutating action buttons in this phase.">
         {!data.rows.length ? (
-          <EmptyState title="No review rows available." description="The review queue is empty right now." />
+          <EmptyState title="No review emails available." description="The review queue is empty right now." />
         ) : (
           <>
             <div className="coo-table-card">
@@ -74,7 +74,7 @@ export default async function ReviewQueuePage() {
                   {data.rows.map((row) => (
                     <tr key={row.id}>
                       <td className="coo-client-cell">
-                        <Link href={`/clients/${row.clientKey}`} className="coo-client-link">{row.originalRecipient ?? "Unmapped recipient"}</Link>
+                        <Link href={`/clients/${row.clientKey}`} className="coo-client-link">{row.originalRecipient ?? "Client mailbox not identified"}</Link>
                         <span className="coo-client-note">Temporary identity</span>
                       </td>
                       <td><CooBadge label={row.suggestedCategory ?? "unknown"} tone="review" /></td>
@@ -98,7 +98,7 @@ export default async function ReviewQueuePage() {
                 <article key={row.id} className="coo-mobile-card">
                   <div className="coo-mobile-card__top">
                     <div>
-                      <div className="coo-mobile-card__title">{row.originalRecipient ?? "Unmapped recipient"}</div>
+                      <div className="coo-mobile-card__title">{row.originalRecipient ?? "Client mailbox not identified"}</div>
                       <div className="coo-mobile-card__subtitle">{row.queueAgeLabel} · {formatDateTime(row.receivedAt)}</div>
                     </div>
                     <div className="coo-chip-stack">
