@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+const PROTECTED_PATHS = [
+  "/dashboard",
+  "/overview",
+  "/clients",
+  "/operations",
+  "/review-queue",
+];
+
 /**
  * Constant-time comparison to prevent timing attacks.
  */
@@ -18,7 +26,7 @@ function safeCompare(a: string, b: string): boolean {
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (pathname.startsWith("/dashboard")) {
+  if (PROTECTED_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) {
     const authorization = request.headers.get("authorization");
     const expectedSecret = process.env.DASHBOARD_SECRET;
 
@@ -66,5 +74,11 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*"],
+  matcher: [
+    "/dashboard/:path*",
+    "/overview",
+    "/clients/:path*",
+    "/operations",
+    "/review-queue",
+  ],
 };
