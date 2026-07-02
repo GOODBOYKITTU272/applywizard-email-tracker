@@ -45,6 +45,15 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // TEMPORARY: paused while the Render Background Worker runs the same
+  // sync+classify path for the 20–50 email test. Remove this block to
+  // re-enable the Vercel cron once the worker is validated as the sole runner.
+  const CRON_PAUSED_FOR_RENDER_TEST = true;
+  if (CRON_PAUSED_FOR_RENDER_TEST) {
+    console.log("[Zoho Cron] Paused — Render worker test in progress.");
+    return NextResponse.json({ message: "Cron paused for Render worker test." }, { status: 200 });
+  }
+
   // ── Concurrency lock ──────────────────────────────────────────────────────
 
   let locked = false;
