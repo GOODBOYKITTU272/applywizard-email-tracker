@@ -78,7 +78,7 @@ export const config = {
     "/dashboard/:path*",
     "/overview",
     "/clients/:path*",
-    "/operations",
+    "/operations/:path*",
     "/review-queue",
   ],
 };
