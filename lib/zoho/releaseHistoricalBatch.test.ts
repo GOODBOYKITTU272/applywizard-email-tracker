@@ -2,8 +2,6 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("server-only", () => ({}));
-
 function makeSupabase(overrides: {
   countResult?: { count: number | null; error: { message: string } | null };
   rpcResult?: { data: string[] | null; error: { message: string } | null };
@@ -35,8 +33,8 @@ function makeSupabase(overrides: {
 
 let mockSupabase: ReturnType<typeof makeSupabase>;
 
-vi.mock("@/lib/supabase/server", () => ({
-  createSupabaseServerClient: () => mockSupabase.client,
+vi.mock("@/lib/supabase/serviceRole", () => ({
+  createSupabaseServiceRoleClient: () => mockSupabase.client,
 }));
 
 describe("runHistoricalRelease", () => {

@@ -1,8 +1,6 @@
-import "server-only";
-
 import { randomUUID } from "crypto";
 
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/serviceRole";
 
 export const RELEASE_BATCH_SIZE = 100;
 
@@ -63,7 +61,7 @@ export async function runHistoricalRelease(
     return releaseFailure("RELEASE_CONFIG_INVALID");
   }
 
-  const supabase = createSupabaseServerClient() as unknown as SupabaseLike;
+  const supabase = createSupabaseServiceRoleClient() as unknown as SupabaseLike;
 
   try {
     if (options.dryRun) {
