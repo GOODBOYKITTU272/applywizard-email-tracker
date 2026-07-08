@@ -61,7 +61,7 @@ This is the exact filter already used by the `overview` dashboard's "Interviews"
 ## 6. Components
 
 - `lib/zoho/operationsTable.ts` — two functions:
-  - `getInterviewRows(filters: { search?, dateFrom?, dateTo?, page })` — explicit-column Supabase query (never `select("*")`): `id, sender, subject, received_at, category, confidence, priority, deadline, action_required, reason, company_name, job_title, classification_status`. Applies the Section 4 filter, plus `search` (ilike over sender/subject) and `dateFrom`/`dateTo` (over `received_at`). Paginated, 50 rows/page.
+  - `getInterviewRows(filters: { search?, dateFrom?, dateTo?, page })` — explicit-column Supabase query (never `select("*")`): `id, original_recipient, received_at, category, confidence, priority, deadline, action_required, reason, company_name, job_title, classification_status`. Applies the Section 4 filter, plus `search` (ilike over `original_recipient`/`company_name`/`job_title`) and `dateFrom`/`dateTo` (over `received_at`). Paginated, 50 rows/page.
   - `getInterviewById(id)` — same explicit column list, single row, with the Section 5 anti-tampering filter applied.
   - Both return a typed result (`{ ok: true, data }` or `{ ok: false }`) rather than throwing raw Supabase errors up to the page.
 - `components/operations/FilteredEmailTable.tsx` — shared, presentational only (search box, date-range inputs, pagination controls, status-colored badges, "Not available yet" for null `company_name`/`job_title`). Takes rows + column config as props. This is the piece meant to be reused by Applications/Assessments/Offers/etc. in later projects — not built out for them now, just shaped so it can be.
@@ -72,7 +72,9 @@ This is the exact filter already used by the `overview` dashboard's "Interviews"
 
 Renamed from "Safe Email View" — this is not the original email, only the safe, already-persisted metadata fields. No raw email body, headers, attachments, OTPs, tokens, or links are fetched or shown — none of that is stored anywhere in this system in the first place (by existing design convention: bodies are never persisted).
 
-Fields shown: sender, subject, received date, category, confidence, priority, deadline, action_required, sanitized reason, company_name (or "Not available yet"), job_title (or "Not available yet").
+**Correction from the original design draft:** `sender` and `subject` are deliberately excluded. The existing dashboard data layer (`lib/zoho/cooWorkspace.ts`, `SAFE_EMAIL_COLUMNS`, line 9-29) never queries or displays either field anywhere — it uses `original_recipient` (which client mailbox a message was routed to) as its identity anchor instead. This project follows that same established convention rather than introducing raw sender/subject exposure as the first instance of it in the app. Now that `company_name`/`job_title` are persisted, they identify the row better than a raw sender address would anyway.
+
+Fields shown: original_recipient, received date, category, confidence, priority, deadline, action_required, sanitized reason, company_name (or "Not available yet"), job_title (or "Not available yet").
 
 ## 8. Dashboard integration
 
