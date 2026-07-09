@@ -1,5 +1,6 @@
 import "server-only";
 
+import { getLeadByEmail } from "@/lib/leadsApi/getLeadByEmail";
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/serviceRole";
 
 export const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
@@ -12,6 +13,9 @@ export interface EmailArrivalRow {
 
 export interface EmailArrivalMailboxSummary {
   originalRecipient: string;
+  clientName: string;
+  assignedCaName: string;
+  assignedCaEmail: string;
   emailsToday: number;
   latestEmailAt: string;
 }
@@ -97,15 +101,22 @@ export async function getEmailArrivalMonitorData(now = new Date()): Promise<GetE
       }))
       .sort((left, right) => right.latestEmailAt.localeCompare(left.latestEmailAt));
 
-    const totalEmailsToday = rows.reduce((sum, row) => sum + row.emailsToday, 0);
+    const rowsWithLeads = await Promise.all(
+      rows.map(async (row) => ({
+        ...row,
+        ...(await getLeadByEmail(row.originalRecipient)),
+      })),
+    );
+
+    const totalEmailsToday = rowsWithLeads.reduce((sum, row) => sum + row.emailsToday, 0);
 
     return {
       ok: true,
       data: {
-        rows,
+        rows: rowsWithLeads,
         totalEmailsToday,
-        latestEmailAt: rows[0]?.latestEmailAt ?? null,
-        activeMailboxesToday: rows.length,
+        latestEmailAt: rowsWithLeads[0]?.latestEmailAt ?? null,
+        activeMailboxesToday: rowsWithLeads.length,
       },
     };
   } catch {

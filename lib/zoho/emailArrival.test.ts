@@ -58,8 +58,19 @@ vi.mock("@/lib/supabase/serviceRole", () => ({
   createSupabaseServiceRoleClient: () => mockSupabase.client,
 }));
 
+const getLeadByEmailMock = vi.fn(async (email: string) => ({
+  clientName: `Client ${email}`,
+  assignedCaName: `CA ${email}`,
+  assignedCaEmail: `ca-${email}`,
+}));
+
+vi.mock("@/lib/leadsApi/getLeadByEmail", () => ({
+  getLeadByEmail: getLeadByEmailMock,
+}));
+
 describe("getEmailArrivalMonitorData", () => {
   beforeEach(() => {
+    getLeadByEmailMock.mockClear();
     mockSupabase = makeSupabase([
       { original_recipient: "b@example.test", received_at: "2026-07-09T11:00:00.000Z" },
       { original_recipient: "a@example.test", received_at: "2026-07-09T10:00:00.000Z" },
@@ -88,15 +99,24 @@ describe("getEmailArrivalMonitorData", () => {
       expect(result.data.rows).toEqual([
         {
           originalRecipient: "b@example.test",
+          clientName: "Client b@example.test",
+          assignedCaName: "CA b@example.test",
+          assignedCaEmail: "ca-b@example.test",
           emailsToday: 1,
           latestEmailAt: "2026-07-09T11:00:00.000Z",
         },
         {
           originalRecipient: "a@example.test",
+          clientName: "Client a@example.test",
+          assignedCaName: "CA a@example.test",
+          assignedCaEmail: "ca-a@example.test",
           emailsToday: 2,
           latestEmailAt: "2026-07-09T10:00:00.000Z",
         },
       ]);
+      expect(getLeadByEmailMock).toHaveBeenCalledTimes(2);
+      expect(getLeadByEmailMock).toHaveBeenCalledWith("b@example.test");
+      expect(getLeadByEmailMock).toHaveBeenCalledWith("a@example.test");
     }
   });
 
@@ -115,5 +135,6 @@ describe("getEmailArrivalMonitorData", () => {
         activeMailboxesToday: 0,
       },
     });
+    expect(getLeadByEmailMock).not.toHaveBeenCalled();
   });
 });

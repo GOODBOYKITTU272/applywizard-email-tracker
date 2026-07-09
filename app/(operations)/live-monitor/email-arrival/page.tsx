@@ -67,6 +67,9 @@ export default async function EmailArrivalMonitorPage() {
                   <thead>
                     <tr>
                       <th>Client Mailbox</th>
+                      <th>Client Name</th>
+                      <th>Assigned CA</th>
+                      <th>CA Email</th>
                       <th>Emails Today</th>
                       <th>Latest Email</th>
                     </tr>
@@ -75,6 +78,9 @@ export default async function EmailArrivalMonitorPage() {
                     {result.data.rows.map((row) => (
                       <tr key={row.originalRecipient}>
                         <td>{row.originalRecipient}</td>
+                        <td>{row.clientName}</td>
+                        <td>{row.assignedCaName}</td>
+                        <td>{row.assignedCaEmail}</td>
                         <td>{row.emailsToday}</td>
                         <td>{formatIstTime(row.latestEmailAt)}</td>
                       </tr>

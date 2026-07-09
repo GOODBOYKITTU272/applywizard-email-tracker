@@ -9,6 +9,9 @@ vi.mock("@/lib/zoho/emailArrival", () => ({
       rows: [
         {
           originalRecipient: "a@example.test",
+          clientName: "Client A",
+          assignedCaName: "CA A",
+          assignedCaEmail: "ca-a@example.test",
           emailsToday: 2,
           latestEmailAt: "2026-07-09T10:00:00.000Z",
         },
@@ -27,5 +30,17 @@ describe("EmailArrivalMonitorPage", () => {
 
     expect(markup).toContain('http-equiv="refresh"');
     expect(markup).toContain('content="20"');
+  });
+
+  it("renders client and assigned CA columns", async () => {
+    const { default: EmailArrivalMonitorPage } = await import("./page");
+    const markup = renderToStaticMarkup(await EmailArrivalMonitorPage());
+
+    expect(markup).toContain("Client Name");
+    expect(markup).toContain("Assigned CA");
+    expect(markup).toContain("CA Email");
+    expect(markup).toContain("Client A");
+    expect(markup).toContain("CA A");
+    expect(markup).toContain("ca-a@example.test");
   });
 });
