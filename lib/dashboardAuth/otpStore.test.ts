@@ -131,6 +131,7 @@ describe("verifyDashboardEmailOtp", () => {
     otpSelectResult = {
       data: {
         id: OTP_ID,
+        user_id: USER_ID,
         otp_hash: hashOtp(RAW_OTP),
         expires_at: "2026-07-10T10:10:00.000Z",
         used_at: null,
@@ -140,12 +141,15 @@ describe("verifyDashboardEmailOtp", () => {
     };
     const { verifyDashboardEmailOtp } = await import("./otpStore");
 
-    await expect(verifyDashboardEmailOtp({ otpId: OTP_ID, rawOtp: RAW_OTP })).resolves.toEqual({ ok: true });
+    await expect(verifyDashboardEmailOtp({ otpId: OTP_ID, rawOtp: RAW_OTP })).resolves.toEqual({
+      ok: true,
+      userId: USER_ID,
+    });
 
     expect(calls).toContainEqual({
       type: "select",
       table: "dashboard_email_otps",
-      columns: "id, otp_hash, expires_at, used_at, attempt_count",
+      columns: "id, user_id, otp_hash, expires_at, used_at, attempt_count",
     });
     expect(calls).toContainEqual({
       type: "select.eq",
@@ -199,7 +203,14 @@ describe("verifyDashboardEmailOtp", () => {
     });
 
     otpSelectResult = {
-      data: { id: OTP_ID, otp_hash: "hash", expires_at: "2026-07-10T10:10:00.000Z", used_at: NOW.toISOString(), attempt_count: 0 },
+      data: {
+        id: OTP_ID,
+        user_id: USER_ID,
+        otp_hash: "hash",
+        expires_at: "2026-07-10T10:10:00.000Z",
+        used_at: NOW.toISOString(),
+        attempt_count: 0,
+      },
       error: null,
     };
     await expect(verifyDashboardEmailOtp({ otpId: OTP_ID, rawOtp: RAW_OTP })).resolves.toEqual({
@@ -208,7 +219,14 @@ describe("verifyDashboardEmailOtp", () => {
     });
 
     otpSelectResult = {
-      data: { id: OTP_ID, otp_hash: "hash", expires_at: "2026-07-10T09:59:59.999Z", used_at: null, attempt_count: 0 },
+      data: {
+        id: OTP_ID,
+        user_id: USER_ID,
+        otp_hash: "hash",
+        expires_at: "2026-07-10T09:59:59.999Z",
+        used_at: null,
+        attempt_count: 0,
+      },
       error: null,
     };
     await expect(verifyDashboardEmailOtp({ otpId: OTP_ID, rawOtp: RAW_OTP })).resolves.toEqual({
@@ -217,7 +235,14 @@ describe("verifyDashboardEmailOtp", () => {
     });
 
     otpSelectResult = {
-      data: { id: OTP_ID, otp_hash: "hash", expires_at: "2026-07-10T10:10:00.000Z", used_at: null, attempt_count: 5 },
+      data: {
+        id: OTP_ID,
+        user_id: USER_ID,
+        otp_hash: "hash",
+        expires_at: "2026-07-10T10:10:00.000Z",
+        used_at: null,
+        attempt_count: 5,
+      },
       error: null,
     };
     await expect(verifyDashboardEmailOtp({ otpId: OTP_ID, rawOtp: RAW_OTP })).resolves.toEqual({
@@ -239,6 +264,7 @@ describe("verifyDashboardEmailOtp", () => {
     otpSelectResult = {
       data: {
         id: OTP_ID,
+        user_id: USER_ID,
         otp_hash: hashOtp(RAW_OTP),
         expires_at: "2026-07-10T10:10:00.000Z",
         used_at: null,

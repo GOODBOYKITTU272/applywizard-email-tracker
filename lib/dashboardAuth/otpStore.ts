@@ -14,10 +14,13 @@ type VerifyDashboardEmailOtpFailureReason =
   | "too_many_attempts"
   | "incorrect"
   | "query_error";
-type VerifyDashboardEmailOtpResult = { ok: true } | { ok: false; reason: VerifyDashboardEmailOtpFailureReason };
+type VerifyDashboardEmailOtpResult =
+  | { ok: true; userId: string }
+  | { ok: false; reason: VerifyDashboardEmailOtpFailureReason };
 
 interface OtpRow {
   id: string;
+  user_id: string;
   otp_hash: string;
   expires_at: string;
   used_at: string | null;
@@ -71,7 +74,7 @@ async function findOtpById(
 ): Promise<{ ok: true; row: OtpRow | null } | { ok: false }> {
   const { data, error } = await supabase
     .from("dashboard_email_otps")
-    .select("id, otp_hash, expires_at, used_at, attempt_count")
+    .select("id, user_id, otp_hash, expires_at, used_at, attempt_count")
     .eq("id", otpId)
     .maybeSingle();
 
@@ -86,8 +89,8 @@ async function incrementAttemptCount(supabase: SupabaseLike, row: OtpRow): Promi
     .eq("id", row.id)
     .eq("attempt_count", String(row.attempt_count))
     .is("used_at", null)
-    .select("id")
-    .maybeSingle();
+      .select("id")
+      .maybeSingle();
 
   return !error && !!data;
 }
@@ -120,7 +123,7 @@ export async function createDashboardEmailOtp(params: {
 export async function verifyDashboardEmailOtp(params: {
   otpId: string;
   rawOtp: string;
-}): Promise<VerifyDashboardEmailOtpResult> {
+}): Promise<{ ok: true; userId: string } | VerifyDashboardEmailOtpResult> {
   try {
     const supabase = createSupabaseServiceRoleClient() as unknown as SupabaseLike;
     const lookup = await findOtpById(supabase, params.otpId);
@@ -145,7 +148,7 @@ export async function verifyDashboardEmailOtp(params: {
       .maybeSingle();
 
     if (error || !data) return { ok: false, reason: "query_error" };
-    return { ok: true };
+    return { ok: true, userId: row.user_id };
   } catch {
     return { ok: false, reason: "query_error" };
   }
