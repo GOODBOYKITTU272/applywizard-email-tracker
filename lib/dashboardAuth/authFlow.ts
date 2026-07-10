@@ -9,6 +9,11 @@ import { generateRawOtp } from "@/lib/dashboardAuth/otp";
 import { generateRawSessionToken } from "@/lib/dashboardAuth/session";
 import { recordDashboardAuthAuditEvent } from "@/lib/dashboardAuth/auditEvents";
 import { sendDashboardOtpEmail } from "@/lib/dashboardAuth/microsoftGraphOtp";
+import {
+  isDashboardLoginOtpRequestThrottled,
+  isDashboardTotpLoginThrottled,
+  isDashboardTotpSetupThrottled,
+} from "@/lib/dashboardAuth/rateLimit";
 
 const DASHBOARD_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -48,6 +53,17 @@ export async function requestDashboardLoginOtp(params: {
 
   if (!user || user.status !== "active") {
     await recordAuthEvent({
+      eventType: "login_otp_requested",
+      success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
+    });
+    return { ok: true, otpId: fallbackOtpId };
+  }
+
+  if (await isDashboardLoginOtpRequestThrottled(user.id)) {
+    await recordAuthEvent({
+      userId: user.id,
       eventType: "login_otp_requested",
       success: false,
       ip: params.ip,
@@ -155,6 +171,8 @@ export async function completeDashboardTotpSetup(params: {
   userId: string;
   totpSecret: string;
   code: string;
+  ip?: string;
+  userAgent?: string;
 }): Promise<{ ok: true; sessionToken: string } | { ok: false }> {
   const user = await getDashboardUserById(params.userId);
   if (!user || user.status !== "active" || user.totpEnabled) {
@@ -166,11 +184,24 @@ export async function completeDashboardTotpSetup(params: {
     return { ok: false };
   }
 
+  if (await isDashboardTotpSetupThrottled(params.userId)) {
+    await recordAuthEvent({
+      userId: params.userId,
+      eventType: "totp_setup_completed",
+      success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
+    });
+    return { ok: false };
+  }
+
   if (!verifyTotpCode({ secret: params.totpSecret, code: params.code })) {
     await recordAuthEvent({
       userId: params.userId,
       eventType: "totp_setup_completed",
       success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
     });
     return { ok: false };
   }
@@ -182,6 +213,8 @@ export async function completeDashboardTotpSetup(params: {
       userId: params.userId,
       eventType: "totp_setup_completed",
       success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
     });
     return { ok: false };
   }
@@ -197,6 +230,8 @@ export async function completeDashboardTotpSetup(params: {
       userId: params.userId,
       eventType: "totp_setup_completed",
       success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
     });
     return { ok: false };
   }
@@ -205,6 +240,8 @@ export async function completeDashboardTotpSetup(params: {
     userId: params.userId,
     eventType: "totp_setup_completed",
     success: true,
+    ip: params.ip,
+    userAgent: params.userAgent,
   });
 
   return { ok: true, sessionToken };
@@ -213,6 +250,8 @@ export async function completeDashboardTotpSetup(params: {
 export async function verifyDashboardLoginTotp(params: {
   userId: string;
   code: string;
+  ip?: string;
+  userAgent?: string;
 }): Promise<{ ok: true; sessionToken: string } | { ok: false }> {
   const user = await getDashboardUserAuthRecordById(params.userId);
   if (!user || user.status !== "active" || !user.totpEnabled || !user.totpSecretEncrypted) {
@@ -220,6 +259,19 @@ export async function verifyDashboardLoginTotp(params: {
       userId: params.userId,
       eventType: "login_totp_verify",
       success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
+    });
+    return { ok: false };
+  }
+
+  if (await isDashboardTotpLoginThrottled(params.userId)) {
+    await recordAuthEvent({
+      userId: params.userId,
+      eventType: "login_totp_verify",
+      success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
     });
     return { ok: false };
   }
@@ -230,6 +282,8 @@ export async function verifyDashboardLoginTotp(params: {
       userId: params.userId,
       eventType: "login_totp_verify",
       success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
     });
     return { ok: false };
   }
@@ -245,6 +299,8 @@ export async function verifyDashboardLoginTotp(params: {
       userId: params.userId,
       eventType: "login_totp_verify",
       success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
     });
     return { ok: false };
   }
@@ -253,6 +309,8 @@ export async function verifyDashboardLoginTotp(params: {
     userId: params.userId,
     eventType: "login_totp_verify",
     success: true,
+    ip: params.ip,
+    userAgent: params.userAgent,
   });
 
   return { ok: true, sessionToken };

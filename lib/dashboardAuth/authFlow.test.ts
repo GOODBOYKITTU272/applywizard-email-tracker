@@ -154,6 +154,19 @@ vi.mock("@/lib/dashboardAuth/auditEvents", () => ({
   },
 }));
 
+vi.mock("@/lib/dashboardAuth/rateLimit", () => ({
+  isDashboardLoginOtpRequestThrottled: async (userId: string) =>
+    audits.filter((event) => event.userId === userId && event.eventType === "login_otp_requested").length >= 3,
+  isDashboardTotpSetupThrottled: async (userId: string) =>
+    audits.filter(
+      (event) => event.userId === userId && event.eventType === "totp_setup_completed" && event.success === false,
+    ).length >= 5,
+  isDashboardTotpLoginThrottled: async (userId: string) =>
+    audits.filter(
+      (event) => event.userId === userId && event.eventType === "login_totp_verify" && event.success === false,
+    ).length >= 5,
+}));
+
 beforeEach(() => {
   vi.resetModules();
   vi.unstubAllEnvs();
@@ -209,6 +222,28 @@ describe("requestDashboardLoginOtp", () => {
     expect(sentEmails[0]).toMatchObject({ to: "admin@applywizz.ai" });
     expect(createOtpCalls).toEqual([{ userId: "user-1", rawOtp: sentEmails[0].otp }]);
     expect(JSON.stringify(audits)).not.toContain("admin@applywizz.ai");
+  });
+
+  it("returns the same shape for a throttled active user without sending email", async () => {
+    audits.push(
+      { userId: "user-1", eventType: "login_otp_requested", success: true },
+      { userId: "user-1", eventType: "login_otp_requested", success: true },
+      { userId: "user-1", eventType: "login_otp_requested", success: false },
+    );
+
+    const { requestDashboardLoginOtp } = await import("./authFlow");
+    const unknown = await requestDashboardLoginOtp({ email: "missing@applywizz.ai" });
+    const disabled = await requestDashboardLoginOtp({ email: "ca@applywizz.ai" });
+    const throttled = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+
+    expect(unknown).toHaveProperty("ok", true);
+    expect(disabled).toHaveProperty("ok", true);
+    expect(throttled).toHaveProperty("ok", true);
+    expect(Object.keys(unknown).sort()).toEqual(["ok", "otpId"]);
+    expect(Object.keys(disabled).sort()).toEqual(["ok", "otpId"]);
+    expect(Object.keys(throttled).sort()).toEqual(["ok", "otpId"]);
+    expect(sentEmails).toHaveLength(0);
+    expect(createOtpCalls).toHaveLength(0);
   });
 });
 
@@ -320,6 +355,85 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     logSpy.mockRestore();
     errorSpy.mockRestore();
     warnSpy.mockRestore();
+  });
+
+  it("locks out setup after repeated failures and keeps locking out correct codes", async () => {
+    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup } =
+      await import("./authFlow");
+
+    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const otp = sentEmails[0].otp;
+    const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+
+    if (!verification.ok) throw new Error("expected TOTP setup stage");
+
+    const wrongCode = "000000";
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        completeDashboardTotpSetup({
+          userId: verification.userId,
+          totpSecret: verification.totpSecret,
+          code: wrongCode,
+          ip: "198.51.100.1",
+          userAgent: "setup-test",
+        }),
+      ).resolves.toEqual({ ok: false });
+    }
+
+    const correctCode = referenceTotp(verification.totpSecret, TEST_TIME);
+    await expect(
+      completeDashboardTotpSetup({
+        userId: verification.userId,
+        totpSecret: verification.totpSecret,
+        code: correctCode,
+        ip: "198.51.100.1",
+        userAgent: "setup-test",
+      }),
+    ).resolves.toEqual({ ok: false });
+  });
+
+  it("locks out TOTP login after repeated failures and keeps locking out correct codes", async () => {
+    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
+      await import("./authFlow");
+
+    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const otp = sentEmails[0].otp;
+    const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+
+    if (!verification.ok) throw new Error("expected TOTP setup stage");
+
+    const setupCode = referenceTotp(verification.totpSecret, TEST_TIME);
+    const setup = await completeDashboardTotpSetup({
+      userId: verification.userId,
+      totpSecret: verification.totpSecret,
+      code: setupCode,
+    });
+    if (!setup.ok) throw new Error("expected setup session");
+
+    const storedSecret = users[0].totpSecretEncrypted;
+    if (!storedSecret) throw new Error("expected stored secret");
+
+    const wrongCode = "000000";
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        verifyDashboardLoginTotp({
+          userId: verification.userId,
+          code: wrongCode,
+          ip: "198.51.100.2",
+          userAgent: "login-test",
+        }),
+      ).resolves.toEqual({ ok: false });
+    }
+
+    const correctCode = referenceTotp(verification.totpSecret, TEST_TIME);
+    await expect(
+      verifyDashboardLoginTotp({
+        userId: verification.userId,
+        code: correctCode,
+        ip: "198.51.100.2",
+        userAgent: "login-test",
+      }),
+    ).resolves.toEqual({ ok: false });
   });
 
   it("fails closed for missing or disabled users and for invalid TOTP state", async () => {
