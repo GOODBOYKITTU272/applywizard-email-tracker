@@ -14,6 +14,7 @@ import {
   isDashboardTotpLoginThrottled,
   isDashboardTotpSetupThrottled,
 } from "@/lib/dashboardAuth/rateLimit";
+import { issueDashboardLoginChallenge, verifyDashboardLoginChallenge } from "@/lib/dashboardAuth/loginChallenge";
 
 const DASHBOARD_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
@@ -106,11 +107,13 @@ export async function verifyDashboardLoginOtp(params: {
       userId: string;
       totpSecret: string;
       provisioningUri: string;
+      challenge: string;
     }
   | {
       ok: true;
       stage: "totp_required";
       userId: string;
+      challenge: string;
     }
   | { ok: false }
 > {
@@ -140,6 +143,11 @@ export async function verifyDashboardLoginOtp(params: {
   if (!user.totpEnabled) {
     const totpSecret = generateTotpSecret();
     const provisioningUri = buildTotpProvisioningUri({ email: user.email, secret: totpSecret });
+    const challenge = issueDashboardLoginChallenge({
+      userId: user.id,
+      stage: "totp_setup",
+      totpSecret,
+    });
     await recordAuthEvent({
       userId: user.id,
       eventType: "login_otp_verify",
@@ -153,9 +161,14 @@ export async function verifyDashboardLoginOtp(params: {
       userId: user.id,
       totpSecret,
       provisioningUri,
+      challenge,
     };
   }
 
+  const challenge = issueDashboardLoginChallenge({
+    userId: user.id,
+    stage: "totp_login",
+  });
   await recordAuthEvent({
     userId: user.id,
     eventType: "login_otp_verify",
@@ -164,29 +177,24 @@ export async function verifyDashboardLoginOtp(params: {
     userAgent: params.userAgent,
   });
 
-  return { ok: true, stage: "totp_required", userId: user.id };
+  return { ok: true, stage: "totp_required", userId: user.id, challenge };
 }
 
 export async function completeDashboardTotpSetup(params: {
-  userId: string;
-  totpSecret: string;
+  challenge: string;
   code: string;
   ip?: string;
   userAgent?: string;
 }): Promise<{ ok: true; sessionToken: string } | { ok: false }> {
-  const user = await getDashboardUserById(params.userId);
+  const verifiedChallenge = verifyDashboardLoginChallenge(params.challenge, "totp_setup");
+  if (!verifiedChallenge.ok) {
+    return { ok: false };
+  }
+
+  const user = await getDashboardUserById(verifiedChallenge.userId);
   if (!user || user.status !== "active" || user.totpEnabled) {
     await recordAuthEvent({
-      userId: params.userId,
-      eventType: "totp_setup_completed",
-      success: false,
-    });
-    return { ok: false };
-  }
-
-  if (await isDashboardTotpSetupThrottled(params.userId)) {
-    await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "totp_setup_completed",
       success: false,
       ip: params.ip,
@@ -195,9 +203,9 @@ export async function completeDashboardTotpSetup(params: {
     return { ok: false };
   }
 
-  if (!verifyTotpCode({ secret: params.totpSecret, code: params.code })) {
+  if (await isDashboardTotpSetupThrottled(verifiedChallenge.userId)) {
     await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "totp_setup_completed",
       success: false,
       ip: params.ip,
@@ -206,11 +214,23 @@ export async function completeDashboardTotpSetup(params: {
     return { ok: false };
   }
 
-  const encryptedSecret = encryptTotpSecret(params.totpSecret);
-  const saved = await setDashboardUserTotpSecret({ userId: params.userId, encryptedSecret });
+  const trustedTotpSecret = verifiedChallenge.totpSecret;
+  if (!trustedTotpSecret || !verifyTotpCode({ secret: trustedTotpSecret, code: params.code })) {
+    await recordAuthEvent({
+      userId: verifiedChallenge.userId,
+      eventType: "totp_setup_completed",
+      success: false,
+      ip: params.ip,
+      userAgent: params.userAgent,
+    });
+    return { ok: false };
+  }
+
+  const encryptedSecret = encryptTotpSecret(trustedTotpSecret);
+  const saved = await setDashboardUserTotpSecret({ userId: verifiedChallenge.userId, encryptedSecret });
   if (!saved.ok) {
     await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "totp_setup_completed",
       success: false,
       ip: params.ip,
@@ -221,13 +241,13 @@ export async function completeDashboardTotpSetup(params: {
 
   const sessionToken = generateRawSessionToken();
   const sessionResult = await createDashboardSession({
-    userId: params.userId,
+    userId: verifiedChallenge.userId,
     rawToken: sessionToken,
     expiresAt: buildSessionExpiry(),
   });
   if (!sessionResult.ok) {
     await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "totp_setup_completed",
       success: false,
       ip: params.ip,
@@ -237,7 +257,7 @@ export async function completeDashboardTotpSetup(params: {
   }
 
   await recordAuthEvent({
-    userId: params.userId,
+    userId: verifiedChallenge.userId,
     eventType: "totp_setup_completed",
     success: true,
     ip: params.ip,
@@ -248,15 +268,20 @@ export async function completeDashboardTotpSetup(params: {
 }
 
 export async function verifyDashboardLoginTotp(params: {
-  userId: string;
+  challenge: string;
   code: string;
   ip?: string;
   userAgent?: string;
 }): Promise<{ ok: true; sessionToken: string } | { ok: false }> {
-  const user = await getDashboardUserAuthRecordById(params.userId);
+  const verifiedChallenge = verifyDashboardLoginChallenge(params.challenge, "totp_login");
+  if (!verifiedChallenge.ok) {
+    return { ok: false };
+  }
+
+  const user = await getDashboardUserAuthRecordById(verifiedChallenge.userId);
   if (!user || user.status !== "active" || !user.totpEnabled || !user.totpSecretEncrypted) {
     await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "login_totp_verify",
       success: false,
       ip: params.ip,
@@ -265,9 +290,9 @@ export async function verifyDashboardLoginTotp(params: {
     return { ok: false };
   }
 
-  if (await isDashboardTotpLoginThrottled(params.userId)) {
+  if (await isDashboardTotpLoginThrottled(verifiedChallenge.userId)) {
     await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "login_totp_verify",
       success: false,
       ip: params.ip,
@@ -279,7 +304,7 @@ export async function verifyDashboardLoginTotp(params: {
   const totpSecret = decryptTotpSecret(user.totpSecretEncrypted);
   if (!totpSecret || !verifyTotpCode({ secret: totpSecret, code: params.code })) {
     await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "login_totp_verify",
       success: false,
       ip: params.ip,
@@ -290,13 +315,13 @@ export async function verifyDashboardLoginTotp(params: {
 
   const sessionToken = generateRawSessionToken();
   const sessionResult = await createDashboardSession({
-    userId: params.userId,
+    userId: verifiedChallenge.userId,
     rawToken: sessionToken,
     expiresAt: buildSessionExpiry(),
   });
   if (!sessionResult.ok) {
     await recordAuthEvent({
-      userId: params.userId,
+      userId: verifiedChallenge.userId,
       eventType: "login_totp_verify",
       success: false,
       ip: params.ip,
@@ -306,7 +331,7 @@ export async function verifyDashboardLoginTotp(params: {
   }
 
   await recordAuthEvent({
-    userId: params.userId,
+    userId: verifiedChallenge.userId,
     eventType: "login_totp_verify",
     success: true,
     ip: params.ip,

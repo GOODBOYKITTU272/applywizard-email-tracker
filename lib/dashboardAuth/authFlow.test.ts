@@ -29,6 +29,12 @@ let sentEmails: Array<{ to: string; otp: string }>;
 let createOtpCalls: Array<{ userId: string; rawOtp: string }>;
 let sessionCounter: number;
 let otpCounter: number;
+let userLookupCalls: number;
+let userAuthLookupCalls: number;
+let setTotpSecretCalls: number;
+let otpRequestThrottleChecks: number;
+let totpSetupThrottleChecks: number;
+let totpLoginThrottleChecks: number;
 
 const TEST_TIME = new Date("2026-07-11T10:00:00.000Z");
 const SESSION_TOKEN_REGEX = /^[A-Za-z0-9_-]+$/u;
@@ -74,6 +80,7 @@ function referenceTotp(secret: string, now: Date): string {
 
 vi.mock("@/lib/dashboardAuth/users", () => ({
   getDashboardUserByEmail: async (email: string) => {
+    userLookupCalls += 1;
     const normalized = normalizeEmail(email);
     return users
       .filter((user) => normalizeEmail(user.email) === normalized)
@@ -86,6 +93,7 @@ vi.mock("@/lib/dashboardAuth/users", () => ({
       }))[0] ?? null;
   },
   getDashboardUserById: async (userId: string) => {
+    userLookupCalls += 1;
     const user = users.find((entry) => entry.id === userId);
     if (!user) return null;
     return {
@@ -97,6 +105,7 @@ vi.mock("@/lib/dashboardAuth/users", () => ({
     };
   },
   getDashboardUserAuthRecordById: async (userId: string) => {
+    userAuthLookupCalls += 1;
     const user = users.find((entry) => entry.id === userId);
     if (!user) return null;
     return {
@@ -109,6 +118,7 @@ vi.mock("@/lib/dashboardAuth/users", () => ({
     };
   },
   setDashboardUserTotpSecret: async (params: { userId: string; encryptedSecret: string }) => {
+    setTotpSecretCalls += 1;
     const user = users.find((entry) => entry.id === params.userId);
     if (!user) return { ok: false };
     user.totpEnabled = true;
@@ -155,16 +165,26 @@ vi.mock("@/lib/dashboardAuth/auditEvents", () => ({
 }));
 
 vi.mock("@/lib/dashboardAuth/rateLimit", () => ({
-  isDashboardLoginOtpRequestThrottled: async (userId: string) =>
-    audits.filter((event) => event.userId === userId && event.eventType === "login_otp_requested").length >= 3,
-  isDashboardTotpSetupThrottled: async (userId: string) =>
-    audits.filter(
-      (event) => event.userId === userId && event.eventType === "totp_setup_completed" && event.success === false,
-    ).length >= 5,
-  isDashboardTotpLoginThrottled: async (userId: string) =>
-    audits.filter(
-      (event) => event.userId === userId && event.eventType === "login_totp_verify" && event.success === false,
-    ).length >= 5,
+  isDashboardLoginOtpRequestThrottled: async (userId: string) => {
+    otpRequestThrottleChecks += 1;
+    return audits.filter((event) => event.userId === userId && event.eventType === "login_otp_requested").length >= 3;
+  },
+  isDashboardTotpSetupThrottled: async (userId: string) => {
+    totpSetupThrottleChecks += 1;
+    return (
+      audits.filter(
+        (event) => event.userId === userId && event.eventType === "totp_setup_completed" && event.success === false,
+      ).length >= 5
+    );
+  },
+  isDashboardTotpLoginThrottled: async (userId: string) => {
+    totpLoginThrottleChecks += 1;
+    return (
+      audits.filter(
+        (event) => event.userId === userId && event.eventType === "login_totp_verify" && event.success === false,
+      ).length >= 5
+    );
+  },
 }));
 
 beforeEach(() => {
@@ -174,6 +194,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(TEST_TIME);
   vi.stubEnv("DASHBOARD_TOTP_ENCRYPTION_KEY", "totp-flow-secret");
+  vi.stubEnv("DASHBOARD_LOGIN_CHALLENGE_SECRET", "login-challenge-secret");
 
   users = [
     {
@@ -200,6 +221,12 @@ beforeEach(() => {
   createOtpCalls = [];
   sessionCounter = 0;
   otpCounter = 0;
+  userLookupCalls = 0;
+  userAuthLookupCalls = 0;
+  setTotpSecretCalls = 0;
+  otpRequestThrottleChecks = 0;
+  totpSetupThrottleChecks = 0;
+  totpLoginThrottleChecks = 0;
 });
 
 describe("requestDashboardLoginOtp", () => {
@@ -242,6 +269,7 @@ describe("requestDashboardLoginOtp", () => {
     expect(Object.keys(unknown).sort()).toEqual(["ok", "otpId"]);
     expect(Object.keys(disabled).sort()).toEqual(["ok", "otpId"]);
     expect(Object.keys(throttled).sort()).toEqual(["ok", "otpId"]);
+    expect(otpRequestThrottleChecks).toBe(1);
     expect(sentEmails).toHaveLength(0);
     expect(createOtpCalls).toHaveLength(0);
   });
@@ -268,7 +296,7 @@ describe("verifyDashboardLoginOtp", () => {
     });
   });
 
-  it("re-fetches the user by id and returns the correct TOTP stage", async () => {
+  it("returns a setup challenge for first-time users", async () => {
     const { requestDashboardLoginOtp, verifyDashboardLoginOtp } = await import("./authFlow");
 
     const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
@@ -282,17 +310,25 @@ describe("verifyDashboardLoginOtp", () => {
       expect(verify.totpSecret).toMatch(/^[A-Z2-7]+$/u);
       expect(verify.provisioningUri).toContain("otpauth://totp/");
       expect(verify.provisioningUri).toContain("issuer=ApplyWizz+Dashboard");
+      expect(verify.challenge).toMatch(/^loginchallengev1_/u);
     }
+  });
 
-    const totpSecret = verify.ok ? verify.totpSecret : "";
+  it("returns a login challenge for returning users", async () => {
+    const { requestDashboardLoginOtp, verifyDashboardLoginOtp } = await import("./authFlow");
+
     users[0].totpEnabled = true;
     users[0].totpSecretEncrypted = "encrypted-secret";
-    const enabledRequest = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
-    const enabledOtp = sentEmails.at(-1)?.otp ?? "";
-    const ready = await verifyDashboardLoginOtp({ otpId: enabledRequest.otpId, rawOtp: enabledOtp });
-    expect(ready).toEqual({ ok: true, stage: "totp_required", userId: "user-1" });
+    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const otp = sentEmails[0].otp;
+    const verify = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
 
-    expect(totpSecret).toMatch(/^[A-Z2-7]+$/u);
+    expect(verify).toEqual({
+      ok: true,
+      stage: "totp_required",
+      userId: "user-1",
+      challenge: expect.stringMatching(/^loginchallengev1_/u),
+    });
   });
 });
 
@@ -311,11 +347,11 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp });
 
     if (!verification.ok) throw new Error("expected TOTP setup stage");
+    expect(verification.challenge).toMatch(/^loginchallengev1_/u);
 
     const totpCode = referenceTotp(verification.totpSecret, TEST_TIME);
     const setup = await completeDashboardTotpSetup({
-      userId: verification.userId,
-      totpSecret: verification.totpSecret,
+      challenge: verification.challenge,
       code: totpCode,
     });
 
@@ -334,8 +370,14 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     expect(storedSecret).not.toBe(verification.totpSecret);
     expect(storedSecret && decryptTotpSecret(storedSecret)).toBe(verification.totpSecret);
 
+    const enabledRequest = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const enabledOtp = sentEmails.at(-1)?.otp ?? "";
+    const loginVerification = await verifyDashboardLoginOtp({ otpId: enabledRequest.otpId, rawOtp: enabledOtp });
+    if (!loginVerification.ok) throw new Error("expected TOTP login stage");
+    expect(loginVerification.challenge).toMatch(/^loginchallengev1_/u);
+
     const loginCode = referenceTotp(verification.totpSecret, TEST_TIME);
-    const login = await verifyDashboardLoginTotp({ userId: verification.userId, code: loginCode });
+    const login = await verifyDashboardLoginTotp({ challenge: loginVerification.challenge, code: loginCode });
     expect(login.ok).toBe(true);
     if (login.ok) {
       expect(login.sessionToken).toMatch(SESSION_TOKEN_REGEX);
@@ -357,6 +399,37 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     warnSpy.mockRestore();
   });
 
+  it("rejects invalid setup challenges before DB lookup and before rate-limit checks", async () => {
+    const { completeDashboardTotpSetup } = await import("./authFlow");
+
+    await expect(
+      completeDashboardTotpSetup({
+        challenge: "loginchallengev1_not-valid",
+        code: "123456",
+        ip: "198.51.100.1",
+        userAgent: "setup-test",
+      }),
+    ).resolves.toEqual({ ok: false });
+    expect(userLookupCalls).toBe(0);
+    expect(setTotpSecretCalls).toBe(0);
+    expect(totpSetupThrottleChecks).toBe(0);
+  });
+
+  it("rejects invalid login challenges before DB lookup and before rate-limit checks", async () => {
+    const { verifyDashboardLoginTotp } = await import("./authFlow");
+
+    await expect(
+      verifyDashboardLoginTotp({
+        challenge: "loginchallengev1_not-valid",
+        code: "123456",
+        ip: "198.51.100.2",
+        userAgent: "login-test",
+      }),
+    ).resolves.toEqual({ ok: false });
+    expect(userAuthLookupCalls).toBe(0);
+    expect(totpLoginThrottleChecks).toBe(0);
+  });
+
   it("locks out setup after repeated failures and keeps locking out correct codes", async () => {
     const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup } =
       await import("./authFlow");
@@ -366,13 +439,13 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
 
     if (!verification.ok) throw new Error("expected TOTP setup stage");
+    expect(verification.challenge).toMatch(/^loginchallengev1_/u);
 
     const wrongCode = "000000";
     for (let i = 0; i < 5; i++) {
       await expect(
         completeDashboardTotpSetup({
-          userId: verification.userId,
-          totpSecret: verification.totpSecret,
+          challenge: verification.challenge,
           code: wrongCode,
           ip: "198.51.100.1",
           userAgent: "setup-test",
@@ -383,8 +456,7 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const correctCode = referenceTotp(verification.totpSecret, TEST_TIME);
     await expect(
       completeDashboardTotpSetup({
-        userId: verification.userId,
-        totpSecret: verification.totpSecret,
+        challenge: verification.challenge,
         code: correctCode,
         ip: "198.51.100.1",
         userAgent: "setup-test",
@@ -401,11 +473,11 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
 
     if (!verification.ok) throw new Error("expected TOTP setup stage");
+    expect(verification.challenge).toMatch(/^loginchallengev1_/u);
 
     const setupCode = referenceTotp(verification.totpSecret, TEST_TIME);
     const setup = await completeDashboardTotpSetup({
-      userId: verification.userId,
-      totpSecret: verification.totpSecret,
+      challenge: verification.challenge,
       code: setupCode,
     });
     if (!setup.ok) throw new Error("expected setup session");
@@ -413,11 +485,17 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const storedSecret = users[0].totpSecretEncrypted;
     if (!storedSecret) throw new Error("expected stored secret");
 
+    const enabledRequest = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const enabledOtp = sentEmails.at(-1)?.otp ?? "";
+    const loginVerification = await verifyDashboardLoginOtp({ otpId: enabledRequest.otpId, rawOtp: enabledOtp });
+    if (!loginVerification.ok) throw new Error("expected TOTP login stage");
+    expect(loginVerification.challenge).toMatch(/^loginchallengev1_/u);
+
     const wrongCode = "000000";
     for (let i = 0; i < 5; i++) {
       await expect(
         verifyDashboardLoginTotp({
-          userId: verification.userId,
+          challenge: loginVerification.challenge,
           code: wrongCode,
           ip: "198.51.100.2",
           userAgent: "login-test",
@@ -428,7 +506,7 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const correctCode = referenceTotp(verification.totpSecret, TEST_TIME);
     await expect(
       verifyDashboardLoginTotp({
-        userId: verification.userId,
+        challenge: loginVerification.challenge,
         code: correctCode,
         ip: "198.51.100.2",
         userAgent: "login-test",
@@ -439,16 +517,75 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
   it("fails closed for missing or disabled users and for invalid TOTP state", async () => {
     const { completeDashboardTotpSetup, verifyDashboardLoginTotp } = await import("./authFlow");
 
-    await expect(
-      completeDashboardTotpSetup({ userId: "missing", totpSecret: "JBSWY3DPEHPK3PXP", code: "123456" }),
-    ).resolves.toEqual({ ok: false });
-    await expect(
-      verifyDashboardLoginTotp({ userId: "missing", code: "123456" }),
-    ).resolves.toEqual({ ok: false });
+    const { issueDashboardLoginChallenge } = await import("./loginChallenge");
+
+    const missingSetupChallenge = issueDashboardLoginChallenge({
+      userId: "missing",
+      stage: "totp_setup",
+      totpSecret: "JBSWY3DPEHPK3PXP",
+    });
+    const missingLoginChallenge = issueDashboardLoginChallenge({
+      userId: "missing",
+      stage: "totp_login",
+    });
 
     await expect(
-      completeDashboardTotpSetup({ userId: "user-2", totpSecret: "JBSWY3DPEHPK3PXP", code: "123456" }),
+      completeDashboardTotpSetup({ challenge: missingSetupChallenge, code: "123456" }),
     ).resolves.toEqual({ ok: false });
-    await expect(verifyDashboardLoginTotp({ userId: "user-2", code: "123456" })).resolves.toEqual({ ok: false });
+    await expect(verifyDashboardLoginTotp({ challenge: missingLoginChallenge, code: "123456" })).resolves.toEqual({
+      ok: false,
+    });
+
+    const disabledSetupChallenge = issueDashboardLoginChallenge({
+      userId: "user-2",
+      stage: "totp_setup",
+      totpSecret: "JBSWY3DPEHPK3PXP",
+    });
+    const disabledLoginChallenge = issueDashboardLoginChallenge({
+      userId: "user-2",
+      stage: "totp_login",
+    });
+
+    await expect(
+      completeDashboardTotpSetup({ challenge: disabledSetupChallenge, code: "123456" }),
+    ).resolves.toEqual({ ok: false });
+    await expect(verifyDashboardLoginTotp({ challenge: disabledLoginChallenge, code: "123456" })).resolves.toEqual({
+      ok: false,
+    });
+  });
+
+  it("rejects forged, tampered, and wrong-stage challenges", async () => {
+    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
+      await import("./authFlow");
+    const { issueDashboardLoginChallenge } = await import("./loginChallenge");
+
+    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const otp = sentEmails[0].otp;
+    const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+    if (!verification.ok) throw new Error("expected setup challenge");
+
+    const loginChallenge = issueDashboardLoginChallenge({ userId: verification.userId, stage: "totp_login" });
+    const setupChallenge = issueDashboardLoginChallenge({
+      userId: verification.userId,
+      stage: "totp_setup",
+      totpSecret: verification.totpSecret,
+    });
+
+    const tamperedSetup = `${setupChallenge.slice(0, -1)}${setupChallenge.endsWith("A") ? "B" : "A"}`;
+    const tamperedLogin = `${loginChallenge.slice(0, -1)}${loginChallenge.endsWith("A") ? "B" : "A"}`;
+
+    await expect(completeDashboardTotpSetup({ challenge: tamperedSetup, code: "123456" })).resolves.toEqual({
+      ok: false,
+    });
+    await expect(verifyDashboardLoginTotp({ challenge: tamperedLogin, code: "123456" })).resolves.toEqual({
+      ok: false,
+    });
+
+    await expect(verifyDashboardLoginTotp({ challenge: setupChallenge, code: "123456" })).resolves.toEqual({
+      ok: false,
+    });
+    await expect(completeDashboardTotpSetup({ challenge: loginChallenge, code: "123456" })).resolves.toEqual({
+      ok: false,
+    });
   });
 });

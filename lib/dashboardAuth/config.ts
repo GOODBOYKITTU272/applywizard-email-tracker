@@ -18,6 +18,14 @@ export function getDashboardTotpEncryptionKey(): string {
   return secret || "dashboard-totp-test-secret";
 }
 
+export function getDashboardLoginChallengeSecret(): string {
+  const secret = process.env.DASHBOARD_LOGIN_CHALLENGE_SECRET;
+  if (!secret && process.env.NODE_ENV !== "test") {
+    throw new Error("Dashboard login challenge secret is not configured.");
+  }
+  return secret || "dashboard-login-challenge-test-secret";
+}
+
 export function hmacHex(value: string): string {
   return createHmac("sha256", getDashboardAuthSecret()).update(value).digest("hex");
 }

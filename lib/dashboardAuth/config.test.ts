@@ -30,4 +30,36 @@ describe("dashboard auth config", () => {
 
     expect(getDashboardTotpEncryptionKey()).toBe("dashboard-totp-test-secret");
   });
+
+  it("reads the dashboard login challenge secret from env", async () => {
+    vi.stubEnv("DASHBOARD_LOGIN_CHALLENGE_SECRET", "challenge-secret");
+    const { getDashboardLoginChallengeSecret } = await import("./config");
+
+    expect(getDashboardLoginChallengeSecret()).toBe("challenge-secret");
+  });
+
+  it("uses a test fallback for the dashboard login challenge secret when missing in tests", async () => {
+    vi.stubEnv("DASHBOARD_LOGIN_CHALLENGE_SECRET", "");
+    const { getDashboardLoginChallengeSecret } = await import("./config");
+
+    expect(getDashboardLoginChallengeSecret()).toBe("dashboard-login-challenge-test-secret");
+  });
+
+  it("throws without logging when the dashboard login challenge secret is missing outside tests", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("DASHBOARD_LOGIN_CHALLENGE_SECRET", "");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { getDashboardLoginChallengeSecret } = await import("./config");
+
+    expect(() => getDashboardLoginChallengeSecret()).toThrow("Dashboard login challenge secret is not configured.");
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
 });
