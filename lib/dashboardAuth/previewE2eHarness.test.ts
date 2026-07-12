@@ -5,12 +5,52 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   PREVIEW_E2E_ACTION_TIMEOUT_MS,
+  PREVIEW_E2E_LOGIN_CONTROL_TEST_ID,
   PREVIEW_E2E_NAVIGATION_TIMEOUT_MS,
+  PREVIEW_E2E_SETUP_CONTROL_TEST_ID,
   PREVIEW_E2E_SOFT_NAV_LINK,
+  detectPostOtpBranch,
   promptForOtpWithTimeout,
   runPreviewDashboardAuthE2EWithDeps,
   validatePreviewE2eEnvironment,
 } from "../../scripts/dashboard-auth/previewE2eHarness";
+
+type BranchPage = Parameters<typeof detectPostOtpBranch>[0];
+
+function branchLocator(behavior: "resolve" | "reject" | "never" | number, visible: boolean) {
+  return {
+    waitFor: () => {
+      if (behavior === "resolve") return Promise.resolve();
+      if (behavior === "reject") return Promise.reject(new Error("Timeout 30000ms exceeded"));
+      if (behavior === "never") return new Promise<void>(() => {});
+      return new Promise<void>((resolve) => setTimeout(resolve, behavior));
+    },
+    isVisible: async () => visible,
+    fill: async () => {},
+    click: async () => {},
+    textContent: async () => null,
+  };
+}
+
+function branchPage(opts: {
+  setup?: "resolve" | "reject" | "never" | number;
+  login?: "resolve" | "reject" | "never" | number;
+  setupVisible?: boolean;
+  loginVisible?: boolean;
+}): BranchPage {
+  const setupLoc = branchLocator(opts.setup ?? "resolve", opts.setupVisible ?? false);
+  const loginLoc = branchLocator(opts.login ?? "reject", opts.loginVisible ?? false);
+  const fallback = branchLocator("resolve", false);
+  return {
+    getByTestId: (id: string) =>
+      id === PREVIEW_E2E_SETUP_CONTROL_TEST_ID ? setupLoc : id === PREVIEW_E2E_LOGIN_CONTROL_TEST_ID ? loginLoc : fallback,
+    getByRole: () => fallback,
+    getByText: () => ({ first: () => fallback }),
+    goto: async () => undefined,
+    waitForURL: async () => {},
+    evaluate: async () => true,
+  } as unknown as BranchPage;
+}
 
 function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
@@ -39,6 +79,8 @@ function makeHarnessDeps(
     newPageThrows?: boolean;
     setTimeoutThrows?: boolean;
     contextCloseThrows?: boolean;
+    branchNeither?: boolean;
+    branchLoginNever?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -56,6 +98,12 @@ function makeHarnessDeps(
     waitFor: vi.fn(async () => {
       if (options.secretWaitThrows && name === "dashboard-auth-totp-secret") {
         throw new Error("Timeout 30000ms exceeded waiting for locator");
+      }
+      if (options.branchNeither && (name === PREVIEW_E2E_SETUP_CONTROL_TEST_ID || name === PREVIEW_E2E_LOGIN_CONTROL_TEST_ID)) {
+        throw new Error("Timeout 30000ms exceeded waiting for locator");
+      }
+      if (options.branchLoginNever && name === PREVIEW_E2E_LOGIN_CONTROL_TEST_ID) {
+        return new Promise<void>(() => {});
       }
       events.push(`wait:${name}`);
     }),
@@ -330,8 +378,8 @@ describe("preview E2E harness flow", () => {
     expect(PREVIEW_E2E_ACTION_TIMEOUT_MS).toBe(30_000);
   });
 
-  it("fails and cleans up when a setup control never appears", async () => {
-    const deps = makeHarnessDeps({ revealVisible: true, secretWaitThrows: true });
+  it("fails and cleans up when the setup key never renders after reveal", async () => {
+    const deps = makeHarnessDeps({ secretWaitThrows: true });
 
     await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow(/Timeout/);
     expect(deps.disableAdmin).toHaveBeenCalled();
@@ -423,6 +471,66 @@ describe("preview E2E harness browser lifecycle cleanup", () => {
     await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).resolves.toEqual({ ok: true });
     expect(deps.context.close).toHaveBeenCalledTimes(1);
     expect(deps.browser.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("preview E2E post-OTP branch detection", () => {
+  it("detects a setup screen that renders after a delay", async () => {
+    await expect(detectPostOtpBranch(branchPage({ setup: 15, login: "never" }))).resolves.toBe("setup");
+  });
+
+  it("detects a login screen that renders after a delay", async () => {
+    await expect(detectPostOtpBranch(branchPage({ setup: "never", login: 15 }))).resolves.toBe("login");
+  });
+
+  it("fails deterministically, without secrets, when neither control appears", async () => {
+    const page = branchPage({ setup: "reject", login: "reject" });
+    await expect(detectPostOtpBranch(page)).rejects.toThrow("BRANCH_DETECTION_FAILED");
+    // The failure carries no OTP, secret, or key material — only a stable code.
+    await detectPostOtpBranch(page).catch((error: unknown) => {
+      expect((error as Error).message).toBe("BRANCH_DETECTION_FAILED");
+    });
+  });
+
+  it("fails deterministically when both controls appear at once", async () => {
+    await expect(
+      detectPostOtpBranch(branchPage({ setup: "resolve", login: "resolve", setupVisible: true, loginVisible: true })),
+    ).rejects.toThrow("BRANCH_DETECTION_AMBIGUOUS");
+  });
+});
+
+describe("preview E2E branch handling in the full run", () => {
+  it("clicks the setup reveal control only after it has appeared", async () => {
+    const deps = makeHarnessDeps({ branchLoginNever: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).resolves.toEqual({ ok: true });
+    const waitIndex = deps.events.indexOf(`wait:${PREVIEW_E2E_SETUP_CONTROL_TEST_ID}`);
+    const clickIndex = deps.events.indexOf(`click:${PREVIEW_E2E_SETUP_CONTROL_TEST_ID}`);
+    expect(waitIndex).toBeGreaterThanOrEqual(0);
+    expect(clickIndex).toBeGreaterThan(waitIndex);
+  });
+
+  it("runs admin, context, and browser cleanup when branch detection fails", async () => {
+    const deps = makeHarnessDeps({ branchNeither: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow("BRANCH_DETECTION_FAILED");
+    expect(deps.disableAdmin).toHaveBeenCalled();
+    expect(deps.context.close).toHaveBeenCalledTimes(1);
+    expect(deps.browser.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("never logs the OTP or setup key during a run", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deps = makeHarnessDeps({ branchLoginNever: true });
+
+    await runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps));
+
+    const logged = [...logSpy.mock.calls, ...errorSpy.mock.calls].flat().join(" ");
+    expect(logged).not.toContain("JBSWY3DPEHPK3PXP");
+    expect(logged).not.toContain("123456");
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
   });
 });
 

@@ -242,6 +242,37 @@ async function confirmBasicAuthGate(params: {
   return unauthenticated.status === 401;
 }
 
+export const PREVIEW_E2E_SETUP_CONTROL_TEST_ID = "dashboard-auth-show-setup-key";
+export const PREVIEW_E2E_LOGIN_CONTROL_TEST_ID = "dashboard-auth-login-code";
+
+/**
+ * Decide the post-OTP branch by waiting (bounded by the context default
+ * timeout) for whichever control actually renders first, instead of a one-shot
+ * isVisible() check made before the screen has painted. Errors carry no secrets.
+ */
+export async function detectPostOtpBranch(page: PreviewPage): Promise<"setup" | "login"> {
+  const setupControl = page.getByTestId(PREVIEW_E2E_SETUP_CONTROL_TEST_ID);
+  const loginControl = page.getByTestId(PREVIEW_E2E_LOGIN_CONTROL_TEST_ID);
+
+  // Promise.race attaches a reaction to both waits, so the loser rejecting later
+  // (e.g. at its own timeout) is consumed and never becomes an unhandled rejection.
+  const winner = await Promise.race([
+    setupControl.waitFor().then(() => "setup" as const),
+    loginControl.waitFor().then(() => "login" as const),
+  ]).catch(() => null);
+
+  if (!winner) throw new Error("BRANCH_DETECTION_FAILED");
+
+  // Reject an ambiguous dual-state deterministically rather than guessing.
+  const otherVisible =
+    winner === "setup"
+      ? await loginControl.isVisible().catch(() => false)
+      : await setupControl.isVisible().catch(() => false);
+  if (otherVisible) throw new Error("BRANCH_DETECTION_AMBIGUOUS");
+
+  return winner;
+}
+
 async function authenticatePreviewSession(params: {
   page: PreviewPage;
   previewUrl: string;
@@ -256,12 +287,11 @@ async function authenticatePreviewSession(params: {
   await params.page.getByTestId("dashboard-auth-otp").fill(otp);
   await params.page.getByRole("button", { name: "Continue" }).click();
 
-  // The setup key is hidden by default behind a QR code; reveal it to read the
-  // secret. Presence of the reveal control distinguishes first-time setup from
-  // an existing-authenticator login.
-  const revealSetupKey = params.page.getByRole("button", { name: "Can't scan? Show setup key" });
-  if (await revealSetupKey.isVisible().catch(() => false)) {
-    await revealSetupKey.click();
+  // The setup key is hidden behind a QR code; the reveal control's presence marks
+  // first-time setup, the login-code input marks an existing authenticator.
+  const branch = await detectPostOtpBranch(params.page);
+  if (branch === "setup") {
+    await params.page.getByTestId(PREVIEW_E2E_SETUP_CONTROL_TEST_ID).click();
     const setupSecret = params.page.getByTestId("dashboard-auth-totp-secret");
     await setupSecret.waitFor();
     const secret = (await setupSecret.textContent())?.trim() ?? "";
@@ -270,7 +300,7 @@ async function authenticatePreviewSession(params: {
     await params.page.getByRole("button", { name: "Complete setup" }).click();
   } else {
     const code = await params.promptForOtp("Enter the authenticator code for the Preview test user: ");
-    await params.page.getByTestId("dashboard-auth-login-code").fill(code);
+    await params.page.getByTestId(PREVIEW_E2E_LOGIN_CONTROL_TEST_ID).fill(code);
     await params.page.getByRole("button", { name: "Sign in" }).click();
   }
 
