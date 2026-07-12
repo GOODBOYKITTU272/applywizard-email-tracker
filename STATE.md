@@ -46,6 +46,21 @@ Current slice:
 - No production changes have occurred.
 - No deployment has occurred.
 
+Phase B plan review status:
+- Initial Phase B plan review verdict: CHANGES REQUIRED
+- The review did not reject the architecture; it required six infrastructure/operational corrections:
+  1. Resolve Preview database isolation honestly (single Supabase configuration today; dedicated Preview Supabase project is the recommended default, shared-DB testing only as an owner-declined fallback with mandatory cleanup).
+  2. Specify OTP retrieval for the real E2E (local operator-assisted headed Playwright; no Graph mailbox-read automation in B1).
+  3. Name the Preview deployment mechanism (vercel deploy from local worker-preflight; never the vercel-prod remote; Deployment Protection bypass handled without printing secrets).
+  4. Add a Vercel WAF rate-limit rule on /api/dashboard/auth/* (~20 req/min/IP) as a blocking B3 prerequisite before Basic Auth removal reaches production.
+  5. Make post-E2E test-user cleanup mandatory (disable + revoke-all after every run; cleanup failure fails B1).
+  6. Formalize B1/B2/B3 phase gates with explicit entry/exit conditions.
+- All six corrections are now incorporated into the revised plan document.
+- Phase B1 remains blocked until diff re-check of the revised plan and explicit owner approval of:
+  - a dedicated Preview Supabase project
+  - a dedicated org-owned Preview OTP test mailbox
+- No code, seed, environment, push, or deployment changes occurred during plan revision.
+
 Current rules:
 - Basic Auth must remain active until an explicitly approved slice changes it.
 - No push or deploy without explicit Ramakrishna approval.
@@ -74,10 +89,10 @@ Slice 11 non-blocking observations:
 - Production rollout still requires DASHBOARD_TOTP_ENCRYPTION_KEY, DASHBOARD_LOGIN_CHALLENGE_SECRET, seeded dashboard_users, and completion/review of the middleware/session-switch slice.
 
 Next expected human-approved task:
-- Review the Dashboard Auth Phase B Basic Auth removal plan before any Phase B implementation, user seeding, environment change, push, or deploy.
+- Diff re-check of the revised Phase B plan, then owner approval of the dedicated Preview Supabase project and the Preview OTP test mailbox before Phase B1 begins.
 
 Last run:
-- 2026-07-12: Slice 12 Phase B plan prepared as documentation only; no implementation, seeding, environment change, push, or deploy
+- 2026-07-12: Phase B plan revised per CHANGES REQUIRED review; documentation only — no implementation, seeding, environment change, push, or deploy
 
 Slice 12 Phase A implementation summary:
 - Added server-only requireDashboardSession guard using the reviewed getDashboardSessionByToken helper.

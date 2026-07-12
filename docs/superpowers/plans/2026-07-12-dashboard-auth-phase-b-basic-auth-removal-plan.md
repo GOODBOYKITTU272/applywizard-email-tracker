@@ -1,12 +1,18 @@
-# Dashboard Auth Phase B Basic Auth Removal Plan
+# Dashboard Auth Phase B Basic Auth Removal Plan (Revised)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Prove the dashboard-session authentication system with real Preview data, then remove Basic Auth without exposing protected dashboard routes.
 
-**Architecture:** Phase B is a two-stage rollout: first seed and verify a real Preview dashboard user and database-backed session behavior, then remove the Basic Auth gates in a separately reviewed implementation commit. Per-page `requireDashboardSession()` guards remain the authoritative protection boundary for business pages.
+**Architecture:** Phase B is a three-stage gated rollout — B1 (Preview setup and real database-backed E2E), B2 (Basic Auth removal implementation), B3 (production rollout). Per-page `requireDashboardSession()` guards remain the authoritative protection boundary for business pages throughout.
 
 **Tech Stack:** Next.js App Router, Supabase service-role server helpers, Vercel Preview/Production env vars, Vitest, Playwright.
+
+## Review Status
+
+- Initial planning commit: `5b239ebea46b000c0a45c99c259c06c4392884db`
+- Independent review verdict: `CHANGES REQUIRED` — no architecture rejection; six infrastructure/operational corrections required.
+- This revision incorporates all six corrections. No production code is approved by this document.
 
 ## Global Constraints
 
@@ -38,6 +44,13 @@ Phase B must not be treated as a deploy instruction. Production rollout remains 
 
 ## B. Current-State Analysis
 
+### Single Supabase Configuration (Isolation Reality)
+
+- The app reads exactly one Supabase target: `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` via `lib/supabase/serviceRole.ts`.
+- The dashboard-auth migration was applied to the **production** Supabase project.
+- The repository does not currently prove that any separate Preview Supabase project exists.
+- Therefore, a Vercel Preview deployment inherits production database credentials unless Preview-scoped env vars are deliberately configured. Phase B1 must resolve this before any seeding or E2E (see Section C).
+
 ### Current Basic Auth Middleware Behavior
 
 - `middleware.ts` enforces Basic Auth with username `admin` and `DASHBOARD_SECRET`.
@@ -61,7 +74,7 @@ Phase B must not be treated as a deploy instruction. Production rollout remains 
 - It redirects to `/dashboard/login` for missing, fake, malformed, expired, revoked, disabled-user, missing-user, DB-failure, or exception paths.
 - Protected pages call this helper independently; the operations layout is not the sole authorization boundary.
 
-Current guarded pages include:
+Current guarded pages:
 
 - `app/dashboard/page.tsx`
 - `app/(operations)/overview/page.tsx`
@@ -77,29 +90,18 @@ Current guarded pages include:
 - `app/(operations)/mailboxes/page.tsx`
 - `app/(operations)/ca-portfolio/page.tsx`
 
-### Current Login and Setup Flow
+### Current Login, Setup, and Logout Flow
 
-- `/dashboard/login` renders `DashboardAuthClient` unless a valid `dashboard_session` is already present.
-- A valid session at `/dashboard/login` redirects to `/overview`.
-- The client flow calls only the reviewed API routes:
-  - `POST /api/dashboard/auth/request-otp`
-  - `POST /api/dashboard/auth/verify-otp`
-  - `POST /api/dashboard/auth/complete-totp-setup`
-  - `POST /api/dashboard/auth/verify-totp`
+- `/dashboard/login` renders `DashboardAuthClient` unless a valid `dashboard_session` is already present; a valid session redirects to `/overview`.
+- The client flow calls only the reviewed API routes: request-otp, verify-otp, complete-totp-setup, verify-totp.
 - Successful setup/login relies on the `HttpOnly` `dashboard_session` cookie and navigates to `/overview`.
-
-### Current Logout Flow
-
-- `POST /api/dashboard/auth/logout` exists.
-- During Phase A it calls `requireDashboardBasicAuth()` first.
-- It checks `Origin`, reads `dashboard_session`, calls `revokeDashboardSession(rawToken)` when present, ignores revocation result for response purposes, clears the cookie, and returns `200 { "ok": true }`.
+- `POST /api/dashboard/auth/logout` exists: Phase A Basic Auth gate first, Origin check, reads `dashboard_session`, revokes when present, ignores revocation result for response purposes, always clears the cookie, returns `200 { "ok": true }`.
 - The operations navigation has a logout action that POSTs to the endpoint and hard-navigates to `/dashboard/login`.
 
 ### Current `/dashboard` Dependency on `DASHBOARD_SECRET`
 
 - `app/dashboard/page.tsx` still includes a `DASHBOARD_SECRET` configuration check inherited from the Basic Auth era.
-- Phase A intentionally retained this check.
-- Phase B must explicitly review and remove or replace this check after Basic Auth removal is otherwise proven.
+- Phase A intentionally retained this check; Phase B2 must explicitly review and remove or replace it.
 - Removing the check must not change the restored Email Tracker business UI or its Supabase queries.
 
 ### Current Auth API Basic Auth Gates
@@ -114,8 +116,6 @@ The following routes still call `requireDashboardBasicAuth()`:
 
 ### Current Environment-Secret Dependencies
 
-Dashboard auth currently depends on:
-
 - `DASHBOARD_SESSION_SECRET`
 - `DASHBOARD_TOTP_ENCRYPTION_KEY`
 - `DASHBOARD_LOGIN_CHALLENGE_SECRET`
@@ -129,90 +129,117 @@ No secret values belong in code, tests, docs, logs, state, or run-log files.
 
 ### Current Database Assumptions
 
-- The dashboard auth migration is live and defines:
-  - `dashboard_users`
-  - `dashboard_email_otps`
-  - `dashboard_sessions`
-  - `dashboard_auth_audit_events`
-- RLS is enabled; access is revoked from `public`, `anon`, and `authenticated`.
-- Service-role access is required for server helpers.
+- The dashboard auth migration defines `dashboard_users`, `dashboard_email_otps`, `dashboard_sessions`, `dashboard_auth_audit_events`.
+- RLS is enabled; access is revoked from `public`, `anon`, and `authenticated`; service-role access is required.
 - No dashboard user seed script currently exists in the repo.
 
 ### Current Missing E2E Coverage
 
-The following remain mandatory before Basic Auth removal:
+Mandatory before Basic Auth removal:
 
-1. Authenticate with a real seeded valid session and confirm `/dashboard` renders the Email Tracker business UI.
+1. Authenticate with a real seeded valid session and confirm `/dashboard` renders the Email Tracker business page identity.
 2. Revoke or expire a real valid session in the database, soft-navigate to another protected route, and confirm denial.
 
 Static route-guard tests and mocked session tests are regression tripwires, not substitutes for those real database-backed checks.
 
-## C. Preview Environment Prerequisites
+## C. Preview Database Isolation (Correction 1)
 
-Before any Phase B implementation:
+### Recommended and Default Path: Dedicated Preview Supabase Project
 
-- Vercel Preview must have Sensitive env vars present for:
+Provision a dedicated non-production Preview Supabase project before any Phase B1 testing.
+
+Requirements:
+
+- [ ] Apply the existing dashboard-auth migrations to the Preview project.
+- [ ] Configure Vercel **Preview-scoped** environment variables (Preview environment only, never overwriting Production values):
+  - `NEXT_PUBLIC_SUPABASE_URL` (Preview project)
+  - `SUPABASE_SERVICE_ROLE_KEY` (Preview project)
   - `DASHBOARD_SESSION_SECRET`
   - `DASHBOARD_TOTP_ENCRYPTION_KEY`
   - `DASHBOARD_LOGIN_CHALLENGE_SECRET`
-  - `MICROSOFT_TENANT_ID`
-  - `MICROSOFT_CLIENT_ID`
-  - `MICROSOFT_CLIENT_SECRET`
-  - `MICROSOFT_OTP_FROM_EMAIL`
-  - `DASHBOARD_SECRET` retained initially for Phase A coexistence
-- The target Preview Supabase project must contain the four dashboard auth tables.
-- At least one active `admin_ceo` dashboard user must exist in `dashboard_users`.
-- The seeded test user must use an approved non-production staff/test mailbox capable of receiving Microsoft Graph OTP emails.
-- TOTP setup must be performed through the normal login/setup flow unless an owner-approved test bootstrap process is created.
-- Secret presence verification must use presence-only output, such as Vercel env listing or a boolean diagnostic. Never print values.
-- Preview must be clearly identified so tests cannot accidentally run against production.
+  - `MICROSOFT_TENANT_ID`, `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_OTP_FROM_EMAIL`
+  - `DASHBOARD_SECRET` (retained for Phase A coexistence)
+- [ ] Never use production database credentials in the Preview deployment.
+- [ ] Verify the Preview Supabase project reference before running any seed or E2E tooling (allowlist check in tooling; see Section E).
+- [ ] Verify all four auth tables exist in Preview (read-only `select count(*)` per table).
+- [ ] Accept that business/Zoho tables may be absent in Preview: `/dashboard` and `/overview` may render empty/error business states there.
+- [ ] E2E assertions for `/dashboard` and `/overview` must therefore target **page identity, authenticated shell, and route protection** — headings, layout shell, and redirect behavior — not production business-row counts.
 
-## D. User-Seeding Strategy
+### Fallback Path (Owner-Declined Only)
 
-No reusable dashboard-user operator script exists today. Phase B implementation must include one of these owner-approved approaches before testing:
+If a separate Preview Supabase project is explicitly declined by the owner, shared-production-database testing requires all of the following:
 
-1. Add a one-off, preview-safe operator script that upserts one dashboard user.
-2. Run an explicitly reviewed SQL statement against Preview only.
+- Explicit owner approval of shared-database testing.
+- An org-owned dedicated test email (never personal).
+- **Mandatory** test-user disablement after every test run.
+- **Mandatory** revocation of all sessions for the test user after every test run.
+- Explicit written warning acknowledged by the owner: **the seeded test user is a real production login principal** until disabled.
+- No Basic Auth removal (B2) while that user remains active.
+- No automated mutation of unrelated production data — E2E tooling may touch only `dashboard_users`, `dashboard_sessions`, `dashboard_email_otps`, and `dashboard_auth_audit_events` rows belonging to the test user.
+- Strong allowlisting in all tooling and recorded cleanup evidence for every run.
 
-Recommended implementation approach:
+The dedicated Preview Supabase project is the recommended and default path; the fallback exists only as a documented owner-declined alternative.
 
-- Create a small operator script only if owner approves it.
-- Require an explicit environment guard such as `DASHBOARD_AUTH_SEED_TARGET=preview`.
-- Require the email through an env var or CLI argument such as `DASHBOARD_TEST_ADMIN_EMAIL`.
-- Refuse to run if the target appears to be production unless a separate production-specific approval flag is provided in a later rollout step.
-- Normalize email to lowercase through existing helper semantics.
-- Upsert by `email_normalized`.
-- Insert/update fields:
-  - `email`
-  - `role = 'admin_ceo'`
-  - `status = 'active'`
-  - `totp_enabled = false` for first enrollment unless reusing an existing test user
-  - `totp_secret_encrypted = null` for first enrollment unless owner approves preserving an existing secret
-- Duplicate runs must be idempotent and must not create multiple users for the same email.
-- The script must not log personal data beyond the approved test email and must never log secrets.
-- Cleanup must disable the test user or delete it only if owner approves audit/history loss.
-- Cleanup must revoke all sessions for the user with `revokeDashboardSessionsForUser(userId)` or an equivalent reviewed service-role update.
-- Production seeding is explicitly prohibited during this planning task.
+## D. Preview Deployment Mechanism (Correction 3)
 
-## E. Real Database-Backed E2E Plan
+- Use `vercel deploy` from the local `worker-preflight` branch to create a Preview deployment.
+- Do not push to or modify the `vercel-prod` remote.
+- Do not deploy to production.
+- Confirm the resulting URL is a Preview URL, not a production alias, before running any test.
+- Check whether Vercel Deployment Protection is enabled for Preview deployments.
+- If protected, use the approved deployment-protection bypass header (`x-vercel-protection-bypass`) or operator login in the headed test.
+- Never print bypass-secret values in logs, evidence, or test output.
 
-These E2E tests must run against a Preview deployment and Preview Supabase project with a seeded test user. They must not run against production.
+## E. User-Seeding Strategy (Seed-Script Specification)
+
+Use a reviewed **one-off operator script**, not raw SQL. Production bootstrap must be a separate B3 artifact — this script has **no production mode at all**.
+
+Required safety behavior:
+
+- [ ] Require `DASHBOARD_AUTH_SEED_TARGET=preview` to run at all.
+- [ ] Require the resolved `NEXT_PUBLIC_SUPABASE_URL` to match an explicitly allowlisted Preview project reference (URL-substring allowlist), so pointing the script at production env vars fails even with the flag set.
+- [ ] Refuse to run if the URL resembles or equals the production project.
+- [ ] Read the test email from `DASHBOARD_TEST_ADMIN_EMAIL` (env var or CLI argument). Never hardcode a personal email.
+- [ ] Normalize the email and upsert by `email_normalized`.
+- [ ] Set: `role = 'admin_ceo'`, `status = 'active'`, `totp_enabled = false`, `totp_secret_encrypted = null`.
+- [ ] Be idempotent — duplicate runs must not create multiple users for the same email.
+- [ ] Output only: the normalized email and a created/updated status. Never print secrets, tokens, recovery codes, or encrypted TOTP values.
+- [ ] Support a companion `--disable` mode: set the user's status to `disabled` and revoke all sessions for that user (`revokeDashboardSessionsForUser(userId)` or an equivalent reviewed service-role update).
+- [ ] Preserve audit evidence — never delete audit rows.
+- [ ] Require independent code review before first execution against any database.
+
+## F. Real Database-Backed E2E Plan
+
+These E2E tests run against a Preview deployment and the Preview Supabase project with a seeded test user. They must not run against production.
+
+### Execution Model (Correction 2): Local, Operator-Assisted, Headed
+
+Phase B1 E2E is **local and operator-assisted, not fully unattended CI**:
+
+- The test launches headed Playwright against the Preview deployment URL.
+- The operator reads the email OTP from the dedicated org-owned test mailbox.
+- The operator enters the OTP into the headed browser.
+- Scripted assertions continue automatically after OTP entry.
+- TOTP setup codes are computed programmatically from the setup secret displayed during enrollment, using the same reference TOTP implementation already used in existing tests.
+- Do not add Microsoft Graph mailbox-read automation in Phase B1.
+- Automated Graph OTP retrieval may be considered later only if this E2E becomes recurring.
+- The test command must require `DASHBOARD_AUTH_E2E_TARGET=preview` and must refuse to run if the URL is the production alias.
 
 ### Test Data Setup
 
-- Confirm the Preview deployment URL.
+- Confirm the Preview deployment URL (Section D).
 - Confirm Preview env presence without printing values.
-- Confirm auth tables exist.
-- Seed or verify one active `admin_ceo` Preview test user.
-- Use a non-production mailbox that can receive Microsoft OTP.
+- Confirm auth tables exist in the Preview project.
+- Seed or verify one active `admin_ceo` Preview test user (Section E).
+- Use the org-owned non-production mailbox that can receive Microsoft OTP.
 - Run TOTP enrollment using the normal `/dashboard/login` flow.
 - Capture the `dashboard_session` cookie only inside the isolated test browser context.
 
 ### Mandatory E2E Cases
 
 1. Authenticate using the real seeded valid user.
-2. Confirm `/overview` loads after setup/login.
-3. Navigate to `/dashboard` and confirm the Email Tracker business UI renders.
+2. Confirm `/overview` loads after setup/login (page identity/authenticated shell).
+3. Navigate to `/dashboard` and confirm the Email Tracker page identity renders.
 4. Navigate to another protected route such as `/applications` or `/mailboxes` and confirm it loads.
 5. Revoke or expire the current session in the Preview database.
 6. Soft-navigate from one protected route to another protected sibling route.
@@ -226,31 +253,121 @@ These E2E tests must run against a Preview deployment and Preview Supabase proje
 
 ### Revocation/Expiry Mechanism
 
-Use one of these reviewed, Preview-only mechanisms:
+- Preferred: a local test utility that receives the raw session cookie inside the test process, uses the existing HMAC hashing helper locally to identify the session, and uses the service-role Preview client to set `revoked_at` or an expired `expires_at`.
+- Never print token or hash values.
+- Do not add a production route or public test-only endpoint for session mutation.
 
-- Preferred: a test utility that receives the raw session cookie inside the test process, calls the existing `getDashboardSessionByToken(rawToken)` helper to identify the session, and uses the service-role Preview client to set `revoked_at` or an expired `expires_at`.
-- Alternative: a tightly scoped SQL update against Preview that identifies the session through the same HMAC hashing helper locally, never by printing token/hash values.
+### Mandatory Cleanup (Correction 5)
 
-Do not add a production route or public test-only endpoint for session mutation.
+After **every** Phase B1 E2E run, without exception:
 
-### Test Isolation and Cleanup
+- [ ] Disable the seeded Preview test user.
+- [ ] Revoke all sessions for that user.
+- [ ] Retain sanitized audit events as evidence — do not delete audit history merely for cleanup.
+- [ ] Record cleanup success in the evidence document.
+- [ ] **If cleanup fails, Phase B1 is considered failed and must not unlock Phase B2.**
 
-- Each E2E run should use a fresh browser context.
-- Revoke all sessions for the test user after the run.
-- Leave audit rows intact unless an owner-approved cleanup policy says otherwise.
-- Disable or remove the test user after testing only if owner approves.
-- On failure, capture only sanitized screenshots/logs; do not capture OTPs, TOTP codes, challenge tokens, session tokens, cookies, or secrets.
+Cleanup is mandatory even with an isolated Preview database — it is hygiene, not merely risk mitigation.
 
-### CI and Local Execution
+### Evidence Requirements
 
-- The real DB-backed E2E may run locally against Preview or in CI against Preview.
-- CI requires secrets to be provided as masked CI env vars.
-- The test command must require an explicit target variable such as `DASHBOARD_AUTH_E2E_TARGET=preview`.
-- The command must refuse to run if the URL is the production alias.
+Record durable sanitized evidence in `STATE.md` or a dedicated evidence document:
 
-## F. Exact Basic Auth Removal Scope
+- Preview URL identifier (without secrets or bypass tokens).
+- Preview Supabase project identifier/reference, sanitized where necessary.
+- Seed script result (normalized email + created/updated).
+- OTP-assisted login result.
+- `/overview` authenticated result.
+- `/dashboard` page identity result.
+- Another protected route result.
+- Session revocation result.
+- Revoke-then-soft-navigation denial result.
+- Logout result.
+- Post-logout denial result.
+- Test-user disablement result.
+- Revoke-all cleanup result.
+- Confirmation that no production data was mutated.
 
-After Preview proof and explicit approval, the Basic Auth removal implementation may touch only these areas unless review finds a concrete blocker:
+Never record OTPs, TOTP secrets, session tokens, cookies, service-role keys, or bypass secrets.
+
+## G. Phase Structure and Gates (Correction 6)
+
+### Phase B1 — Preview Setup and Real E2E
+
+Scope:
+
+- [ ] Provision or confirm the dedicated Preview Supabase project (Section C).
+- [ ] Configure Preview-scoped Vercel environment values.
+- [ ] Review and build the Preview-only seed script (Section E).
+- [ ] Review and build the local revocation/cleanup tooling (Section F).
+- [ ] Deploy current Phase A to Vercel Preview via `vercel deploy` (Section D).
+- [ ] Run the operator-assisted real DB-backed E2E (Section F).
+- [ ] Record sanitized evidence.
+- [ ] Disable the test user and revoke all sessions (mandatory).
+
+No Basic Auth removal in B1.
+
+Entry gate:
+
+- Revised plan approved by independent review.
+- Owner authorizes the dedicated Preview Supabase project and the test mailbox.
+
+Exit gate:
+
+- Preview E2E passes all mandatory cases.
+- `/overview` loads with a real session.
+- `/dashboard` shows the Email Tracker page identity.
+- Revocation followed by soft navigation is denied.
+- Logout revokes and denies later access.
+- Cleanup succeeds (disable + revoke-all recorded).
+- Independent review of B1 tooling and evidence.
+
+### Phase B2 — Basic Auth Removal Implementation
+
+Scope:
+
+- [ ] Remove Basic Auth from `middleware.ts`.
+- [ ] Remove Basic Auth gates from the five dashboard-auth API routes.
+- [ ] Remove or replace the `/dashboard` `DASHBOARD_SECRET` dependency.
+- [ ] Update tests and documentation (including `.env.example`; see Section L).
+- [ ] Keep all per-page dashboard session guards.
+- [ ] Keep logout Origin protection.
+- [ ] Keep cookie and session validation behavior.
+
+Entry gate:
+
+- B1 evidence approved.
+- Vercel WAF plan finalized (Section J).
+- Explicit owner approval.
+
+Exit gate:
+
+- Full automated suite passes.
+- Independent code/security review passes.
+- Post-removal Preview smoke passes.
+
+### Phase B3 — Production Rollout
+
+Scope:
+
+- [ ] Verify production secrets and schema by presence/status only.
+- [ ] Seed the real production admin user using a separately reviewed production bootstrap artifact (not the B1 script).
+- [ ] Configure the Vercel WAF rate-limit rule (Section J).
+- [ ] Create rollback tag: `phase-a-basic-auth-final`.
+- [ ] Deploy only with explicit owner approval.
+- [ ] Run production smoke tests.
+- [ ] Monitor rollback criteria.
+- [ ] Retain `DASHBOARD_SECRET` for 14 days after production deployment, or until a full login/logout cycle is verified and the owner signs off, whichever is later.
+
+Entry gate:
+
+- B2 approved and Preview verified post-removal.
+- Production admin email approved.
+- Production deployment explicitly approved.
+
+## H. Exact Basic Auth Removal Scope (B2)
+
+The B2 implementation may touch only these areas unless review finds a concrete blocker:
 
 - `middleware.ts`
   - Remove Basic Auth challenge/validation from protected dashboard routes.
@@ -269,9 +386,12 @@ After Preview proof and explicit approval, the Basic Auth removal implementation
 - Tests:
   - Remove or update tests expecting Basic Auth 401 on dashboard/login/auth APIs.
   - Remove Playwright `httpCredentials` only after route behavior is updated.
-  - Add tests proving public login/API access and protected page denial without Basic Auth.
+  - **Replace** the Phase A coexistence tests with their post-removal equivalents:
+    - public login page test,
+    - public auth API test,
+    - protected pages deny without dashboard session.
 - Documentation/env files:
-  - Update `.env.example` and docs to mark `DASHBOARD_SECRET` as rollback-only or no longer required after the rollback window.
+  - Update `.env.example` and docs to mark `DASHBOARD_SECRET` as rollback-only after the rollback window.
   - Do not delete the actual Vercel env var until owner approves after production stability.
 - Deployment settings:
   - Do not modify Vercel project settings except through explicit rollout steps.
@@ -285,26 +405,38 @@ Do not remove or weaken:
 - login challenge validation
 - logout Origin check
 
-## G. Post-Removal Route Policy
+## I. Post-Removal Route Policy
 
 After Basic Auth removal:
 
 - `/dashboard/login` is publicly reachable.
-- `/api/dashboard/auth/*` is publicly reachable, subject to strict JSON validation, OTP/TOTP throttling, signed login challenges, and generic failure responses.
+- `/api/dashboard/auth/*` is publicly reachable, subject to strict JSON validation, OTP/TOTP throttling, signed login challenges, generic failure responses, and the B3 WAF rate limit.
 - Protected business pages still require a valid usable `dashboard_session`.
 - `/overview` remains the post-login landing page.
 - `/dashboard` remains a protected Email Tracker business page.
 - Static assets, `/_next/*`, metadata, and unrelated APIs remain unaffected.
-- Zoho cron, worker, test, sync, and classification APIs must not be changed as part of Basic Auth removal.
+- Unrelated APIs (Zoho cron, worker, test, sync, classification) remain untouched, period.
 - Invalid sessions redirect to `/dashboard/login`.
 - A valid session visiting `/dashboard/login` redirects to `/overview`.
-- Redirects must not include attacker-controlled destinations; no open redirect support should be added.
+- Redirects must not include attacker-controlled destinations; no open redirect support.
 - Redirect loops must be tested:
   - `/dashboard/login` with no/invalid session renders login.
   - Protected routes with no/invalid session redirect to `/dashboard/login`.
   - `/dashboard/login` with valid session redirects once to `/overview`.
 
-## H. Security Analysis
+## J. Security Analysis
+
+### WAF Rate Limiting (Correction 4) — B3 Prerequisite
+
+- Configure a Vercel WAF rate-limit rule for `/api/dashboard/auth/*`.
+- Recommended starting policy: approximately **20 requests per minute per IP**.
+- The exact threshold may be adjusted after Preview testing.
+- Not required for Phase B1 (Basic Auth remains active).
+- **Blocking before Basic Auth removal reaches production (B3).**
+- Do not add application-level IP rate limiting in this slice unless later evidence requires it.
+- Retain all existing per-user OTP send limits, OTP attempt counts, and TOTP failure throttles unchanged.
+
+Rationale: per-user throttles are strong, but the public `request-otp` endpoint performs a DB lookup and an audit-event insert per anonymous request; an IP-level platform rule bounds write amplification and cost without new application code.
 
 ### Fail-Closed Behavior
 
@@ -314,139 +446,65 @@ After Basic Auth removal:
 
 ### Database Outage Behavior
 
-- During a DB outage, `getDashboardSessionByToken()` returns `{ ok: false }`.
-- Protected pages redirect to `/dashboard/login`.
-- Login flows may fail generically.
-- This is an availability failure, not a fail-open condition.
+- During a DB outage, `getDashboardSessionByToken()` returns `{ ok: false }`; protected pages redirect to `/dashboard/login`; login fails generically. This is an availability failure, not fail-open.
 
-### Brute Force and Rate Limiting
+### Brute Force, Login Challenge Abuse, TOTP Replay
 
-- OTP request throttling remains backed by audit events.
-- Email OTP verification uses hashed OTPs, expiry, attempt counts, and generic responses.
-- TOTP setup/login throttling remains required because codes are 6 digits with ±1 time-step tolerance.
-- Removing Basic Auth increases exposure of auth APIs, so Phase B must re-run all rate-limit tests and add public-endpoint abuse-path tests.
+- OTP request throttling remains backed by audit events; email OTP verification uses hashed OTPs, expiry, attempt counts, and generic responses.
+- TOTP setup/login throttling remains required (6-digit codes, ±1 time-step tolerance).
+- Removing Basic Auth increases auth API exposure: B2 must re-run all rate-limit tests and add public-endpoint abuse-path tests.
+- TOTP setup/login must continue deriving trusted `userId` and setup secret only from signed encrypted login challenges (short-lived, stage-bound, never logged, never in URLs or browser storage).
+- TOTP setup persists the encrypted secret only after proof-of-possession. Re-enrollment/reset flows remain out of scope unless separately approved.
 
-### Login Challenge Abuse
+### Session Fixation, Cookie Replay, Secret Rotation
 
-- TOTP setup/login must continue deriving trusted `userId` and setup secret only from signed encrypted login challenges.
-- Challenge tokens are short-lived and stage-bound.
-- Challenge tokens must not be logged, persisted in browser storage, or placed in URLs.
-
-### TOTP Replay
-
-- TOTP codes are time-window valid; rate limiting and generic failures remain the main defenses.
-- TOTP setup persists the encrypted secret only after proof-of-possession.
-- Re-enrollment/reset flows remain out of scope unless owner approves a separate plan.
-
-### Session Fixation and Cookie Replay
-
-- Routes must set `dashboard_session` only after successful TOTP setup/login.
-- Session tokens are random, hashed in DB, HttpOnly, SameSite=Lax, Path=/, and Secure in production.
-- No client-controlled cookie writing should be introduced.
-- Replayed cookies are valid only until expiry/revocation and only if the DB session remains usable.
-
-### Secret Rotation
-
-- `DASHBOARD_SESSION_SECRET` rotation invalidates existing session hashes unless a dual-secret migration is designed.
-- `DASHBOARD_TOTP_ENCRYPTION_KEY` rotation requires re-encryption or forced re-enrollment.
-- `DASHBOARD_LOGIN_CHALLENGE_SECRET` rotation invalidates in-flight login challenges only.
-- Microsoft Graph client secret rotation affects OTP delivery.
-- `DASHBOARD_SECRET` should remain available during the rollback window even after Basic Auth removal.
+- `dashboard_session` is set only server-side after successful TOTP setup/login; tokens are random, hashed in DB, HttpOnly, SameSite=Lax, Path=/, Secure in production.
+- Replayed cookies are valid only until expiry/revocation and only while the DB session remains usable.
+- `DASHBOARD_SESSION_SECRET` rotation invalidates existing session hashes unless a dual-secret migration is designed; `DASHBOARD_TOTP_ENCRYPTION_KEY` rotation requires re-encryption or re-enrollment; `DASHBOARD_LOGIN_CHALLENGE_SECRET` rotation invalidates in-flight challenges only; Microsoft client secret rotation affects OTP delivery. Do not rotate secrets in Phase B.
+- `DASHBOARD_SECRET` remains available during the rollback window after Basic Auth removal.
 
 ### Seeded-User Compromise
 
-- Disable the `dashboard_users` row.
-- Revoke all active sessions for that user.
-- Rotate TOTP enrollment if needed.
-- Review audit events for suspicious failures.
+- Disable the `dashboard_users` row; revoke all sessions; rotate TOTP enrollment if needed; review audit events.
 
 ### Logout CSRF
 
-- Logout is idempotent and clears the session.
-- Keep the Origin check.
-- Missing Origin may remain allowed for compatibility; `Origin: null` should fail closed as it does in Phase A.
-- Do not add state-changing GET logout.
+- Keep the Origin check. Missing Origin may remain allowed for compatibility; `Origin: null` fails closed as in Phase A. No state-changing GET logout.
 
 ### Sensitive Logging
 
-Never log:
-
-- Basic Auth credentials
-- OTPs
-- TOTP codes
-- TOTP secrets
-- provisioning URIs
-- login challenges
-- session tokens
-- session hashes
-- Microsoft tokens
-- raw provider errors
+Never log: Basic Auth credentials, OTPs, TOTP codes, TOTP secrets, provisioning URIs, login challenges, session tokens, session hashes, Microsoft tokens, raw provider errors, deployment-protection bypass secrets.
 
 ### Direct RSC, Static Generation, and Middleware Bypass
 
-- Protected pages must stay dynamic where needed and must call `requireDashboardSession()` before loading data.
+- Protected pages must stay dynamic and call `requireDashboardSession()` before loading data.
 - A layout-only guard is insufficient; every protected page keeps its own guard.
 - Basic Auth removal must not create any reliance on middleware for session authorization.
 
 ### Admin Lockout Recovery
 
-Before production rollout, define a recovery procedure:
-
-- Keep rollback deployment or commit ready.
-- Keep `DASHBOARD_SECRET` available during rollback window.
+- Keep the rollback deployment/commit ready and `DASHBOARD_SECRET` available during the rollback window.
 - Maintain a service-role operator path to seed/enable an `admin_ceo` user.
 - Document how to revoke sessions and reset TOTP for the admin user without exposing secrets.
 
-## I. Rollout Sequence
+## K. Rollback Plan
 
-1. Prepare Preview secrets and verify presence only.
-2. Verify the auth tables exist in Preview Supabase.
-3. Seed one active Preview `admin_ceo` test user through the approved process.
-4. Deploy the current Phase A branch to Preview.
-5. Run Preview smoke tests with Basic Auth still active.
-6. Run real database-backed E2E tests.
-7. Review E2E and smoke results.
-8. Implement Basic Auth removal on a new local commit.
-9. Run the full automated suite.
-10. Obtain independent Claude/Fable code and security review.
-11. Deploy the removal commit to Preview.
-12. Run post-removal Preview smoke tests:
-    - public `/dashboard/login`
-    - public dashboard auth APIs
-    - protected routes deny without session
-    - valid session renders `/overview` and `/dashboard`
-    - logout revokes and denies afterward
-13. Obtain explicit production approval.
-14. Verify production secrets and users by presence/status only.
-15. Create rollback checkpoint or tag.
-16. Deploy production.
-17. Run production smoke tests:
-    - login/setup or login/TOTP
-    - `/overview`
-    - `/dashboard`
-    - one additional protected route
-    - logout
-    - post-logout denial
-18. Monitor and document rollback criteria for the agreed window.
-
-## J. Rollback Plan
-
-- Rollback checkpoint: tag or record the last known Phase A deployment/commit before Basic Auth removal.
-- Fast restore: redeploy the Phase A commit or revert the Basic Auth removal commit.
-- Keep `DASHBOARD_SECRET` configured until the rollback window closes.
-- Do not roll back the database schema; Phase B should not require schema changes.
-- To invalidate app-owned sessions, update active `dashboard_sessions` rows to set `revoked_at = now()` through an approved service-role operator path.
-- To disable a compromised user, set `dashboard_users.status = 'disabled'` and revoke that user's sessions.
+- Rollback checkpoint: tag `phase-a-basic-auth-final` on the last known Phase A deployment/commit before Basic Auth removal.
+- Fast restore: redeploy the Phase A commit or revert the B2 removal commit.
+- Keep `DASHBOARD_SECRET` configured until the rollback window closes (14 days post-production or verified cycle + owner sign-off, whichever is later).
+- Do not roll back the database schema; Phase B requires no schema changes.
+- To invalidate app-owned sessions globally: set `revoked_at = now()` on active `dashboard_sessions` rows through an approved service-role operator path.
+- To disable a compromised user: set `dashboard_users.status = 'disabled'` and revoke that user's sessions.
 - Rollback triggers:
   - Admins cannot log in.
   - Protected pages become public.
   - OTP email delivery fails broadly.
   - Session revocation/logout fails.
-  - Production DB auth queries fail in a way that blocks operations beyond the accepted window.
+  - Production DB auth queries fail beyond the accepted window.
   - Sensitive values appear in logs.
 - After rollback, confirm Basic Auth 401/200 behavior and protected dashboard access.
 
-## K. Test Plan
+## L. Test Plan
 
 ### Existing Automated Suites
 
@@ -458,27 +516,13 @@ Before production rollout, define a recovery procedure:
 
 ### Phase A Regression Tests
 
-- Existing auth API route tests.
-- Existing `lib/dashboardAuth` tests.
-- Existing route guard coverage tests.
-- Existing logout route/UI tests.
-- Existing dashboard-auth Playwright suite.
+- Existing auth API route tests, `lib/dashboardAuth` tests, route guard coverage tests, logout route/UI tests, and the dashboard-auth Playwright suite.
 
-### Real DB-Backed E2E
+### Real DB-Backed E2E (B1)
 
-Mandatory before Basic Auth removal:
+See Section F — all ten mandatory cases plus mandatory cleanup and evidence.
 
-- Login with the seeded Preview user.
-- Confirm `/overview` loads.
-- Confirm `/dashboard` renders the Email Tracker business UI.
-- Confirm another protected route loads.
-- Revoke or expire the DB session.
-- Soft-navigate to another protected sibling route.
-- Confirm denial to `/dashboard/login`.
-- Logout revokes and clears cookie.
-- Post-logout protected access is denied.
-
-### Basic Auth Removal Tests
+### Basic Auth Removal Tests (B2)
 
 - `/dashboard/login` no longer requires Basic Auth.
 - Dashboard auth APIs no longer require Basic Auth.
@@ -486,6 +530,7 @@ Mandatory before Basic Auth removal:
 - Basic Auth headers no longer determine dashboard access.
 - `DASHBOARD_SECRET` absence no longer blocks `/dashboard` after its page check is removed.
 - No route becomes public by mistake.
+- Phase A coexistence tests are **replaced** with: public login page test, public auth API test, protected-pages-deny-without-session test.
 
 ### Public Login/API Tests
 
@@ -497,56 +542,29 @@ Mandatory before Basic Auth removal:
 
 ### Protected Route Tests
 
-- No cookie.
-- Fake cookie.
-- Malformed cookie.
-- Expired session.
-- Revoked session.
-- Disabled user.
-- Missing user.
-- Database failure.
-- Valid session.
-- All protected route categories, including `/applications`, `/mailboxes`, and `/ca-portfolio`.
+- No cookie, fake cookie, malformed cookie, expired session, revoked session, disabled user, missing user, database failure, valid session — across all protected route categories including `/applications`, `/mailboxes`, `/ca-portfolio`.
 
 ### Logout Tests
 
-- Valid cookie revokes.
-- No cookie succeeds.
-- Malformed cookie succeeds.
-- Already-revoked session succeeds.
-- Double logout succeeds.
-- Cookie clears.
-- Post-logout access denied.
-- Origin mismatch returns generic `{ ok: false }`.
+- Valid cookie revokes; no cookie succeeds; malformed cookie succeeds; already-revoked succeeds; double logout succeeds; cookie clears; post-logout access denied; Origin mismatch returns generic `{ ok: false }`.
 
 ### Secret-Missing and DB-Failure Tests
 
 - Missing session/TOTP/challenge/Microsoft env vars fail closed where applicable.
-- Missing `DASHBOARD_SECRET` should not matter after Basic Auth removal and `/dashboard` check removal.
+- Missing `DASHBOARD_SECRET` no longer matters after B2.
 - DB failures deny protected pages and produce generic login failures.
 
 ### Smoke Tests
 
-Preview smoke before removal:
+- Preview smoke before removal: Basic Auth active; login flow works behind Basic Auth; same-origin API calls work; session guard protects pages beneath Basic Auth.
+- Preview smoke after removal: login route public; auth APIs public; protected pages deny without session; valid session reaches `/overview`, `/dashboard`, one more protected route; logout denies later access.
+- Production smoke after explicit approval: same as post-removal Preview smoke, using the approved production `admin_ceo` user.
 
-- Basic Auth remains active.
-- Dashboard login flow works behind Basic Auth.
-- Auth API calls work same-origin behind Basic Auth.
-- Dashboard session protects pages beneath Basic Auth.
+### `.env.example` (B2 Only)
 
-Preview smoke after removal:
+- During B2, add the eight dashboard-auth environment variable names as placeholders in `.env.example` (`DASHBOARD_SESSION_SECRET`, `DASHBOARD_TOTP_ENCRYPTION_KEY`, `DASHBOARD_LOGIN_CHALLENGE_SECRET`, `MICROSOFT_TENANT_ID`, `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `MICROSOFT_OTP_FROM_EMAIL`, `DASHBOARD_SECRET` marked rollback-only). Placeholders only — never real values.
 
-- Login route public.
-- Auth APIs public.
-- Protected pages deny without session.
-- Valid session can access `/overview`, `/dashboard`, and one additional protected route.
-- Logout denies later access.
-
-Production smoke after explicit approval:
-
-- Same as post-removal Preview smoke, using approved production `admin_ceo` user.
-
-## L. Explicit Out of Scope
+## M. Explicit Out of Scope
 
 - Role-based authorization.
 - Manager Ops or CA data scoping.
@@ -560,68 +578,38 @@ Production smoke after explicit approval:
 - Database schema unrelated to auth.
 - New deployment platform.
 - New package dependencies unless a blocker is documented and approved.
+- Application-level IP rate limiting (WAF handles it; see Section J).
 - Production deployment during this planning task.
 - Production user seeding during this planning task.
 - Removing or changing session hashing/encryption primitives.
 
-## M. Owner Decisions Required Before Implementation
+## N. Owner-Decision Table (Recommended Defaults Encoded)
 
-The owner must explicitly decide:
+| Decision | Recommended choice | Gate |
+| --- | --- | --- |
+| Preview database | Dedicated Preview Supabase project | Before B1 |
+| Preview test email | Dedicated org-owned test mailbox | Before B1 |
+| Seed method | Reviewed one-off operator script | Before B1 |
+| Re-seed behavior | Reset Preview test user TOTP fields | Before B1 |
+| E2E execution | Local headed operator-assisted | Before E2E |
+| Revocation method | Local service-role utility | Before E2E |
+| OTP mailbox owner | Owner/operator | Before E2E |
+| Post-test cleanup | Mandatory disable and revoke-all | Before B2 |
+| Audit rows | Retain | Non-blocking |
+| Production admin email | Real staff email, different from test user | Before B3 |
+| `DASHBOARD_SECRET` retention | 14 days or verified cycle plus sign-off, whichever is later | Before B3 |
+| Rollback tag | `phase-a-basic-auth-final` | Before B3 |
+| B2 approval | Owner after independent review | Before B2 |
+| Production approval | Owner | Before B3 |
 
-1. Which Preview deployment URL and Supabase project are the authorized Phase B test targets.
-2. Which non-production `admin_ceo` test email will be seeded in Preview.
-3. Whether to create a one-off seed script or use reviewed SQL for Preview seeding.
-4. Whether the seed process may reset `totp_enabled` and `totp_secret_encrypted` for duplicate Preview test users.
-5. Whether CI or local operator execution will run the real DB-backed E2E tests.
-6. Whether the E2E test may use a local service-role utility to revoke/expire Preview sessions.
-7. Who owns the Microsoft OTP mailbox access during Preview tests.
-8. Whether seeded Preview users should be disabled or left active after testing.
-9. Whether audit rows for Preview auth testing should be retained or cleaned.
-10. The production `admin_ceo` bootstrap email and whether it differs from the Preview test user.
-11. How long `DASHBOARD_SECRET` remains configured after Phase B production deployment for rollback.
-12. The exact rollback checkpoint/tag name before production deployment.
-13. Who gives final approval for Basic Auth removal implementation.
-14. Who gives final approval for production deployment.
+### Active Owner Inputs Still Required Now
 
-## Implementation Task Outline
+Only two decisions require active owner input before B1 can begin:
 
-### Task 1: Preview Seed and E2E Harness Plan Finalization
+1. **Authorize creation/use of a dedicated Preview Supabase project.**
+2. **Choose or create the dedicated org-owned Preview OTP mailbox.**
 
-**Files likely changed:**
-- Create or modify an approved operator script only after owner chooses the seeding strategy.
-- Create a dedicated real DB-backed E2E test file only after Preview target and user are approved.
-- Update docs/state/log.
-
-**Deliverable:** Preview seeded-user test path proves real session creation, revocation/expiry, soft-navigation denial, `/overview`, `/dashboard`, logout, and cleanup.
-
-### Task 2: Basic Auth Removal Implementation
-
-**Files likely changed:**
-- `middleware.ts`
-- `app/api/dashboard/auth/*/route.ts`
-- `app/api/dashboard/auth/_lib/basicAuthGate.ts`
-- `app/api/dashboard/auth/_lib/basicAuthGate.test.tsx`
-- `app/dashboard/page.tsx`
-- `tests/dashboard-auth.spec.ts`
-- related route tests
-- `.env.example`
-- docs/state/log
-
-**Deliverable:** Login/auth APIs are public, protected pages remain session-guarded, `/dashboard` keeps its business UI, and all tests pass.
-
-### Task 3: Preview Post-Removal Verification
-
-**Files likely changed:**
-- Tests/docs only unless a defect is found.
-
-**Deliverable:** Preview confirms Basic Auth is removed and dashboard sessions independently protect all approved routes.
-
-### Task 4: Production Rollout Checkpoint
-
-**Files likely changed:**
-- State/run-log only unless owner approves release notes.
-
-**Deliverable:** Owner has reviewed Preview evidence, production prerequisites, rollback checkpoint, and smoke-test checklist before any production deploy.
+The production admin email decision is deferred until B3. All other decisions carry the recommended defaults above and require only assent.
 
 ## Self-Review Checklist
 
@@ -630,7 +618,13 @@ The owner must explicitly decide:
 - This plan does not seed users.
 - This plan does not change env vars.
 - This plan does not deploy.
-- It names all known Basic Auth removal touchpoints.
+- It resolves the Preview database-isolation reality explicitly (Section C).
+- It specifies the OTP-retrieval mechanism (Section F).
+- It names the Preview deployment mechanism (Section D).
+- It adds the WAF rate-limit rule as a B3 prerequisite (Section J).
+- It makes post-E2E cleanup mandatory with a failure consequence (Section F).
+- It formalizes B1/B2/B3 gates (Section G).
+- It names all known Basic Auth removal touchpoints (Section H).
 - It keeps `requireDashboardSession()` as the page-level security boundary.
 - It requires real database-backed Preview E2E before Basic Auth removal.
 - It preserves `/overview` landing and `/dashboard` business UI behavior.
