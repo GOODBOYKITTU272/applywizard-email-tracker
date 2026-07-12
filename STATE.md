@@ -119,7 +119,7 @@ Next expected human-approved task:
 - Owner infrastructure setup and controlled Preview-only execution using the Phase B1 runbook; no Production execution, Phase B removal, push, or deploy without explicit approval.
 
 Last run:
-- 2026-07-12: Phase B1 tooling fix approved; unknown-flag CLI hardening and first Preview execution checklist prepared locally; tooling remains unexecuted.
+- 2026-07-12: Phase B1 first controlled execution was authorized and attempted. All Section 1 safety checks passed; local verification matched baselines (focused 2 files / 46 tests, lib 18 files / 161 tests, full 58 files / 523 tests, lint/build/git diff --check pass); CLI smokes refused correctly (INVALID_TARGET and UNKNOWN_FLAG, both exit 1, no database contact). Execution stopped at the Section 3 infrastructure gate: no dedicated Preview Supabase project exists, all nine DASHBOARD_* Preview-scope env vars are missing, Preview-scope Supabase URL/key are still shared with Production, and the test mailbox is unconfirmed. No push, no deploy, no database contact, no seed, no browser launch. This is not a test failure; owner-managed infrastructure prerequisites are missing.
 
 Slice 12 Phase A implementation summary:
 - Added server-only requireDashboardSession guard using the reviewed getDashboardSessionByToken helper.
