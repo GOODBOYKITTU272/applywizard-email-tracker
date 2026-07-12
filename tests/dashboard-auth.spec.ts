@@ -150,6 +150,7 @@ test.describe("Dashboard auth frontend", () => {
       consoleMessages.push(message.text());
     });
     await installAuthMocks(page, {}, records);
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 
     await page.goto("/dashboard/login");
     await page.getByTestId("dashboard-auth-email").fill("  staff@applywizz.ai  ");
@@ -160,9 +161,17 @@ test.describe("Dashboard auth frontend", () => {
     await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "setup");
-    await expect(page.getByRole("heading", { name: "Set up your authenticator" })).toBeVisible();
-    await expect(page.getByTestId("dashboard-auth-provisioning-uri")).toContainText("otpauth://totp/");
+    await expect(page.getByRole("heading", { name: "Scan with your authenticator app" })).toBeVisible();
+    // QR is shown; the raw provisioning URI is never exposed, and the secret is
+    // hidden until the operator explicitly reveals it.
+    await expect(page.getByTestId("dashboard-auth-qr").locator("svg")).toBeVisible();
+    await expect(page.getByTestId("dashboard-auth-provisioning-uri")).toHaveCount(0);
+    await expect(page.getByTestId("dashboard-auth-totp-secret")).toHaveCount(0);
+
+    await page.getByTestId("dashboard-auth-show-setup-key").click();
     await expect(page.getByTestId("dashboard-auth-totp-secret")).toContainText("SECRET-123");
+    await page.getByTestId("dashboard-auth-copy-key").click();
+    await expect(page.getByRole("status")).toContainText("copied");
 
     await page.getByTestId("dashboard-auth-setup-code").fill("654321");
     await page.getByRole("button", { name: "Complete setup" }).click();
@@ -182,11 +191,17 @@ test.describe("Dashboard auth frontend", () => {
           ? (await indexedDB.databases()).map((db) => db.name ?? "")
           : [];
 
+      const dump = (store: Storage) =>
+        Object.keys(store)
+          .map((key) => `${key}=${store.getItem(key) ?? ""}`)
+          .join("\n");
+
       return {
         localKeys: Object.keys(localStorage),
         sessionKeys: Object.keys(sessionStorage),
         documentCookie: document.cookie,
         indexedDbNames,
+        storageDump: `${dump(localStorage)}\n${dump(sessionStorage)}`,
       };
     });
 
@@ -194,7 +209,37 @@ test.describe("Dashboard auth frontend", () => {
     expect(persistence.sessionKeys).not.toContain("dashboard_session");
     expect(persistence.documentCookie).not.toContain("dashboard_session");
     expect(persistence.indexedDbNames).not.toContain("dashboard_session");
-    expect(consoleMessages.some((message) => /staff@applywizz\.ai|123456|654321|SECRET-123|challenge-1|session-token/i.test(message))).toBe(false);
+    // The setup key and provisioning URI must never be persisted to the browser.
+    expect(persistence.storageDump).not.toContain("SECRET-123");
+    expect(persistence.storageDump).not.toContain("otpauth://");
+    expect(consoleMessages.some((message) => /staff@applywizz\.ai|123456|654321|SECRET-123|otpauth:\/\/|challenge-1|session-token/i.test(message))).toBe(false);
+  });
+
+  test("clears revealed setup state after Start over", async ({ page }) => {
+    await installAuthMocks(page, {}, []);
+
+    await page.goto("/dashboard/login");
+    await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
+    await page.getByRole("button", { name: "Send OTP" }).click();
+    await page.getByTestId("dashboard-auth-otp").fill("123456");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "setup");
+    await page.getByTestId("dashboard-auth-show-setup-key").click();
+    await expect(page.getByTestId("dashboard-auth-totp-secret")).toBeVisible();
+
+    await page.getByRole("button", { name: "Start over" }).click();
+    await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "email");
+    await expect(page.getByTestId("dashboard-auth-totp-secret")).toHaveCount(0);
+
+    // Re-entering setup starts collapsed again — the reveal did not persist.
+    await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
+    await page.getByRole("button", { name: "Send OTP" }).click();
+    await page.getByTestId("dashboard-auth-otp").fill("123456");
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "setup");
+    await expect(page.getByTestId("dashboard-auth-totp-secret")).toHaveCount(0);
+    await expect(page.getByTestId("dashboard-auth-show-setup-key")).toBeVisible();
   });
 
   test("completes the returning-user login flow", async ({ page }) => {

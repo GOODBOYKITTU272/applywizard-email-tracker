@@ -218,8 +218,14 @@ async function authenticatePreviewSession(params: {
   await params.page.getByTestId("dashboard-auth-otp").fill(otp);
   await params.page.getByRole("button", { name: "Continue" }).click();
 
-  const setupSecret = params.page.getByTestId("dashboard-auth-totp-secret");
-  if (await setupSecret.isVisible().catch(() => false)) {
+  // The setup key is hidden by default behind a QR code; reveal it to read the
+  // secret. Presence of the reveal control distinguishes first-time setup from
+  // an existing-authenticator login.
+  const revealSetupKey = params.page.getByRole("button", { name: "Can't scan? Show setup key" });
+  if (await revealSetupKey.isVisible().catch(() => false)) {
+    await revealSetupKey.click();
+    const setupSecret = params.page.getByTestId("dashboard-auth-totp-secret");
+    await setupSecret.waitFor();
     const secret = (await setupSecret.textContent())?.trim() ?? "";
     const code = generateTotpCodeForPreview(secret);
     await params.page.getByTestId("dashboard-auth-setup-code").fill(code);
