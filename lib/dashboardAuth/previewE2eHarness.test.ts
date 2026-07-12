@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -6,6 +7,7 @@ import {
   PREVIEW_E2E_ACTION_TIMEOUT_MS,
   PREVIEW_E2E_NAVIGATION_TIMEOUT_MS,
   PREVIEW_E2E_SOFT_NAV_LINK,
+  promptForOtpWithTimeout,
   runPreviewDashboardAuthE2EWithDeps,
   validatePreviewE2eEnvironment,
 } from "../../scripts/dashboard-auth/previewE2eHarness";
@@ -32,6 +34,11 @@ function makeHarnessDeps(
     revokeOk?: boolean;
     revealVisible?: boolean;
     secretWaitThrows?: boolean;
+    launchThrows?: boolean;
+    newContextThrows?: boolean;
+    newPageThrows?: boolean;
+    setTimeoutThrows?: boolean;
+    contextCloseThrows?: boolean;
   } = {},
 ) {
   const events: string[] = [];
@@ -65,16 +72,30 @@ function makeHarnessDeps(
     }),
   };
   const context = {
-    newPage: vi.fn(async () => page),
-    close: vi.fn(async () => events.push("context-close")),
-    setDefaultTimeout: vi.fn(),
+    newPage: vi.fn(async () => {
+      if (options.newPageThrows) throw new Error("newPage failed");
+      return page;
+    }),
+    close: vi.fn(async () => {
+      events.push("context-close");
+      if (options.contextCloseThrows) throw new Error("context close failed");
+    }),
+    setDefaultTimeout: vi.fn(() => {
+      if (options.setTimeoutThrows) throw new Error("setDefaultTimeout failed");
+    }),
     setDefaultNavigationTimeout: vi.fn(),
   };
   const browser = {
-    newContext: vi.fn(async () => context),
+    newContext: vi.fn(async () => {
+      if (options.newContextThrows) throw new Error("newContext failed");
+      return context;
+    }),
     close: vi.fn(async () => events.push("browser-close")),
   };
-  const launchBrowser = vi.fn(async () => browser);
+  const launchBrowser = vi.fn(async () => {
+    if (options.launchThrows) throw new Error("launch failed");
+    return browser;
+  });
   const createSupabase = vi.fn(() => ({}) as never);
   const promptForOtp = vi.fn(async () => "123456");
   const fetchMock = vi.fn(async () => ({ status: 401 }) as Response);
@@ -335,5 +356,103 @@ describe("preview E2E harness flow", () => {
 
     expect(source).not.toContain("sessionStore");
     expect(source).not.toContain("getDashboardSessionByToken");
+  });
+});
+
+describe("preview E2E harness browser lifecycle cleanup", () => {
+  it("invokes admin cleanup when browser launch fails, leaving no resource open", async () => {
+    const deps = makeHarnessDeps({ launchThrows: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow("launch failed");
+    expect(deps.disableAdmin).toHaveBeenCalled();
+    expect(deps.context.close).not.toHaveBeenCalled();
+    expect(deps.browser.close).not.toHaveBeenCalled();
+  });
+
+  it("closes the browser and invokes admin cleanup when context creation fails", async () => {
+    const deps = makeHarnessDeps({ newContextThrows: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow("newContext failed");
+    expect(deps.browser.close).toHaveBeenCalledTimes(1);
+    expect(deps.disableAdmin).toHaveBeenCalled();
+    expect(deps.context.close).not.toHaveBeenCalled();
+  });
+
+  it("closes context and browser and invokes admin cleanup when page creation fails", async () => {
+    const deps = makeHarnessDeps({ newPageThrows: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow("newPage failed");
+    expect(deps.context.close).toHaveBeenCalledTimes(1);
+    expect(deps.browser.close).toHaveBeenCalledTimes(1);
+    expect(deps.disableAdmin).toHaveBeenCalled();
+  });
+
+  it("reaches full cleanup when timeout configuration fails", async () => {
+    const deps = makeHarnessDeps({ setTimeoutThrows: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow("setDefaultTimeout failed");
+    expect(deps.context.close).toHaveBeenCalledTimes(1);
+    expect(deps.browser.close).toHaveBeenCalledTimes(1);
+    expect(deps.disableAdmin).toHaveBeenCalled();
+  });
+
+  it("still closes the browser and cleans up when context close itself fails", async () => {
+    const deps = makeHarnessDeps({ newPageThrows: true, contextCloseThrows: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow("newPage failed");
+    expect(deps.context.close).toHaveBeenCalledTimes(1);
+    expect(deps.browser.close).toHaveBeenCalledTimes(1);
+    expect(deps.disableAdmin).toHaveBeenCalled();
+  });
+
+  it("cleans up in a fixed order: admin, then context, then browser", async () => {
+    const deps = makeHarnessDeps({ newPageThrows: true });
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).rejects.toThrow("newPage failed");
+    const cleanupIndex = deps.events.indexOf("cleanup");
+    const contextIndex = deps.events.indexOf("context-close");
+    const browserIndex = deps.events.indexOf("browser-close");
+    expect(cleanupIndex).toBeGreaterThanOrEqual(0);
+    expect(contextIndex).toBeGreaterThan(cleanupIndex);
+    expect(browserIndex).toBeGreaterThan(contextIndex);
+  });
+
+  it("closes each browser resource exactly once on a successful run", async () => {
+    const deps = makeHarnessDeps();
+
+    await expect(runPreviewDashboardAuthE2EWithDeps(env(), harnessDepsFor(deps))).resolves.toEqual({ ok: true });
+    expect(deps.context.close).toHaveBeenCalledTimes(1);
+    expect(deps.browser.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("default operator OTP prompt cancellation", () => {
+  it("times out deterministically and releases the readline interface", async () => {
+    const promptInput = new PassThrough();
+    const promptOutput = new PassThrough();
+
+    await expect(promptForOtpWithTimeout("Enter OTP: ", 20, { input: promptInput, output: promptOutput })).rejects.toThrow(
+      "OTP_INPUT_TIMEOUT",
+    );
+    // readline removed its stdin listeners on close, so nothing keeps the CLI alive.
+    expect(promptInput.listenerCount("data")).toBe(0);
+    expect(promptInput.listenerCount("readable")).toBe(0);
+    // Late input after timeout is ignored — no resolve, no throw.
+    expect(() => promptInput.write("999999\n")).not.toThrow();
+  });
+
+  it("resolves with valid input before timeout and never echoes the OTP", async () => {
+    const promptInput = new PassThrough();
+    const promptOutput = new PassThrough();
+    const written: string[] = [];
+    promptOutput.on("data", (chunk) => written.push(String(chunk)));
+
+    const pending = promptForOtpWithTimeout("Enter OTP: ", 10_000, { input: promptInput, output: promptOutput });
+    promptInput.write("123456\n");
+
+    await expect(pending).resolves.toBe("123456");
+    expect(written.join("")).not.toContain("123456");
+    // The interface is closed; further input has no effect and does not hang.
+    expect(() => promptInput.write("000000\n")).not.toThrow();
   });
 });

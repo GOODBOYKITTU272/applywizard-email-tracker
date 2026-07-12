@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
+import type { Readable, Writable } from "node:stream";
 
 import {
   disablePreviewAdmin,
@@ -199,11 +200,26 @@ export function generateTotpCodeForPreview(secret: string, now = new Date()): st
   return String(binary % 1_000_000).padStart(6, "0");
 }
 
-async function defaultPromptForOtp(prompt: string): Promise<string> {
-  const reader = createInterface({ input, output });
+export async function promptForOtpWithTimeout(
+  prompt: string,
+  timeoutMs: number,
+  io: { input?: Readable; output?: Writable } = {},
+): Promise<string> {
+  // Owns its own cancellation: on timeout the pending question is aborted, the
+  // timer cleared, and the interface closed exactly once, so no stdin listener,
+  // timer, or readline handle survives to hang the CLI.
+  const reader = createInterface({ input: io.input ?? input, output: io.output ?? output });
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return (await reader.question(prompt)).trim();
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+    const answer = await reader.question(prompt, { signal: controller.signal });
+    return answer.trim();
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("OTP_INPUT_TIMEOUT");
+    throw error;
   } finally {
+    if (timer) clearTimeout(timer);
     reader.close();
   }
 }
@@ -272,29 +288,35 @@ export async function runPreviewDashboardAuthE2EWithDeps(
   const basicAuthConfirmed = await confirmBasicAuthGate({ fetchImpl, previewUrl: guard.config.previewUrl });
   if (!basicAuthConfirmed) return { ok: false, code: "BASIC_AUTH_GATE_NOT_CONFIRMED" };
 
+  // Cleanup dependencies are established before any browser resource exists so
+  // mandatory cleanup can still run if browser launch or setup itself throws.
   const supabase = deps.createSupabase ? deps.createSupabase() : await defaultCreateSupabase();
-  const browser = await (deps.launchBrowser ?? defaultLaunchBrowser)();
-  const context = await browser.newContext({
-    httpCredentials: {
-      username: "admin",
-      password: guard.config.basicAuthSecret,
-    },
-  });
-  context.setDefaultTimeout(PREVIEW_E2E_ACTION_TIMEOUT_MS);
-  context.setDefaultNavigationTimeout(PREVIEW_E2E_NAVIGATION_TIMEOUT_MS);
-  const page = await context.newPage();
-  const rawPromptForOtp = deps.promptForOtp ?? defaultPromptForOtp;
-  const otpInputTimeoutMs = deps.otpInputTimeoutMs ?? PREVIEW_E2E_OTP_INPUT_TIMEOUT_MS;
-  const promptForOtp = (prompt: string) => withTimeout(rawPromptForOtp(prompt), otpInputTimeoutMs, "OTP_INPUT_TIMEOUT");
   const revokeSessionsForEmail =
     deps.revokeSessionsForEmail ??
     ((params: { env: NodeJS.ProcessEnv; supabase: PreviewAdminSupabase }) => revokePreviewAdminSessionsForEmail(params));
   const disableAdmin =
     deps.disableAdmin ??
     ((params: { env: NodeJS.ProcessEnv; supabase: PreviewAdminSupabase }) => disablePreviewAdmin(params));
+  const otpInputTimeoutMs = deps.otpInputTimeoutMs ?? PREVIEW_E2E_OTP_INPUT_TIMEOUT_MS;
+  const rawPromptForOtp = deps.promptForOtp ?? ((prompt: string) => promptForOtpWithTimeout(prompt, otpInputTimeoutMs));
+  const promptForOtp = (prompt: string) => withTimeout(rawPromptForOtp(prompt), otpInputTimeoutMs, "OTP_INPUT_TIMEOUT");
+
+  let browser: PreviewBrowser | null = null;
+  let context: PreviewBrowserContext | null = null;
   let cleanupOk = false;
 
   try {
+    browser = await (deps.launchBrowser ?? defaultLaunchBrowser)();
+    context = await browser.newContext({
+      httpCredentials: {
+        username: "admin",
+        password: guard.config.basicAuthSecret,
+      },
+    });
+    context.setDefaultTimeout(PREVIEW_E2E_ACTION_TIMEOUT_MS);
+    context.setDefaultNavigationTimeout(PREVIEW_E2E_NAVIGATION_TIMEOUT_MS);
+    const page = await context.newPage();
+
     await authenticatePreviewSession({
       page,
       previewUrl: guard.config.previewUrl,
@@ -334,12 +356,19 @@ export async function runPreviewDashboardAuthE2EWithDeps(
 
     return { ok: true };
   } finally {
+    // Independent, best-effort steps in a fixed order: admin cleanup first, then
+    // context, then browser. A failure in one must not skip the others, and the
+    // run still fails if required admin cleanup did not ultimately succeed.
     if (!cleanupOk) {
       const cleanup = await disableAdmin({ env, supabase }).catch(() => ({ ok: false }));
-      if (!cleanup.ok) cleanupOk = false;
+      cleanupOk = cleanup.ok;
     }
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
+    if (context) {
+      await context.close().catch(() => undefined);
+    }
+    if (browser) {
+      await browser.close().catch(() => undefined);
+    }
   }
 }
 
