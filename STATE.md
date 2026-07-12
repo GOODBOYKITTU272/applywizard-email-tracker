@@ -40,9 +40,9 @@ Current slice:
 - Reviewer: Claude/Fable independent code and security review
 - Blocking findings: none
 - Basic Auth remains active.
-- Phase B planning has started.
-- Phase B implementation has not started.
-- Phase B Basic Auth removal remains blocked pending owner approval, Preview setup, real database-backed E2E evidence, and independent review.
+- Phase B planning is approved through revised plan commit f9fb3cb08f65a9eefdb38edc360b44142d853861.
+- Phase B1 tooling preparation is in progress.
+- Phase B Basic Auth removal has not started and remains blocked pending Preview setup, real database-backed E2E evidence, and independent review.
 - No production changes have occurred.
 - No deployment has occurred.
 
@@ -56,10 +56,11 @@ Phase B plan review status:
   5. Make post-E2E test-user cleanup mandatory (disable + revoke-all after every run; cleanup failure fails B1).
   6. Formalize B1/B2/B3 phase gates with explicit entry/exit conditions.
 - All six corrections are now incorporated into the revised plan document.
-- Phase B1 remains blocked until diff re-check of the revised plan and explicit owner approval of:
-  - a dedicated Preview Supabase project
-  - a dedicated org-owned Preview OTP test mailbox
-- No code, seed, environment, push, or deployment changes occurred during plan revision.
+- Owner approved creating and using a dedicated non-production Preview Supabase project for Phase B1.
+- Owner approved the Preview OTP mailbox direction: use a dedicated company-owned mailbox such as `dashboard-auth-test@applywizz.ai`.
+- Mailbox creation and Microsoft Graph OTP receipt verification remain operational prerequisites until the owner confirms them.
+- Phase B1 tooling status: IMPLEMENTED — PENDING INDEPENDENT REVIEW AND OWNER INFRASTRUCTURE SETUP.
+- No Supabase project, seed, environment, push, or deployment changes have occurred.
 
 Current rules:
 - Basic Auth must remain active until an explicitly approved slice changes it.
@@ -89,10 +90,10 @@ Slice 11 non-blocking observations:
 - Production rollout still requires DASHBOARD_TOTP_ENCRYPTION_KEY, DASHBOARD_LOGIN_CHALLENGE_SECRET, seeded dashboard_users, and completion/review of the middleware/session-switch slice.
 
 Next expected human-approved task:
-- Diff re-check of the revised Phase B plan, then owner approval of the dedicated Preview Supabase project and the Preview OTP test mailbox before Phase B1 begins.
+- Independent review of Phase B1 tooling before first execution, Supabase project creation, Vercel env changes, user seeding, Preview E2E execution, push, or deploy.
 
 Last run:
-- 2026-07-12: Phase B plan revised per CHANGES REQUIRED review; documentation only — no implementation, seeding, environment change, push, or deploy
+- 2026-07-12: Phase B1 Preview seed/cleanup tooling and local operator-assisted E2E harness implemented locally; not executed; pending independent review and owner infrastructure setup.
 
 Slice 12 Phase A implementation summary:
 - Added server-only requireDashboardSession guard using the reviewed getDashboardSessionByToken helper.
@@ -135,6 +136,24 @@ Phase B prerequisites:
   - approved cleanup/revocation process
 - New Phase B plan:
   - docs/superpowers/plans/2026-07-12-dashboard-auth-phase-b-basic-auth-removal-plan.md
+
+Phase B1 tooling summary:
+- Preview-only seed/disable tool added for a dedicated test `admin_ceo` dashboard user.
+- Tooling requires `DASHBOARD_AUTH_SEED_TARGET=preview`, `DASHBOARD_TEST_ADMIN_EMAIL`, and `DASHBOARD_PREVIEW_SUPABASE_PROJECT_REF`.
+- Tooling resolves the Supabase project reference from `NEXT_PUBLIC_SUPABASE_URL` and refuses mismatches or the explicit production project reference.
+- Disable mode marks the Preview test user disabled and revokes sessions using reviewed session-store cleanup behavior.
+- Local operator-assisted Preview E2E harness is prepared but has not been executed.
+- Focused tooling tests: 2 files / 17 tests passed.
+- DashboardAuth tests: 18 files / 132 tests passed.
+- Full Vitest: 58 files / 494 tests passed.
+- Lint passed.
+- Build passed with existing Next.js middleware deprecation warning.
+- git diff --check passed.
+- No Supabase project has been created.
+- No user has been seeded.
+- No environment variables have been changed.
+- No Preview deployment has been created.
+- No production changes have occurred.
 
 Loop readiness audit:
 - 100/100 (L3), report-only safe start
