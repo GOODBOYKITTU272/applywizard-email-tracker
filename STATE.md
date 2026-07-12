@@ -40,8 +40,11 @@ Current slice:
 - Reviewer: Claude/Fable independent code and security review
 - Blocking findings: none
 - Basic Auth remains active.
-- Phase B remains unimplemented and blocked.
-- No push or deployment has occurred.
+- Phase B planning has started.
+- Phase B implementation has not started.
+- Phase B Basic Auth removal remains blocked pending owner approval, Preview setup, real database-backed E2E evidence, and independent review.
+- No production changes have occurred.
+- No deployment has occurred.
 
 Current rules:
 - Basic Auth must remain active until an explicitly approved slice changes it.
@@ -71,10 +74,10 @@ Slice 11 non-blocking observations:
 - Production rollout still requires DASHBOARD_TOTP_ENCRYPTION_KEY, DASHBOARD_LOGIN_CHALLENGE_SECRET, seeded dashboard_users, and completion/review of the middleware/session-switch slice.
 
 Next expected human-approved task:
-- Checkpoint push of worker-preflight after Slice 12 Phase A documentation closure; no deploy.
+- Review the Dashboard Auth Phase B Basic Auth removal plan before any Phase B implementation, user seeding, environment change, push, or deploy.
 
 Last run:
-- 2026-07-12: Slice 12 Phase A marked PASS from Claude/Fable APPROVED verdict; documentation closure only
+- 2026-07-12: Slice 12 Phase B plan prepared as documentation only; no implementation, seeding, environment change, push, or deploy
 
 Slice 12 Phase A implementation summary:
 - Added server-only requireDashboardSession guard using the reviewed getDashboardSessionByToken helper.
@@ -109,6 +112,14 @@ Phase B prerequisites:
 - Real database-backed valid-session E2E must revoke or expire a real valid session, then soft-navigate to another protected route and confirm denial.
 - Real database-backed valid-session E2E must authenticate with a real valid session and confirm /dashboard renders the Email Tracker business UI.
 - Phase B remains unimplemented and requires a separate approved plan before Basic Auth removal.
+- Preview setup is mandatory before Phase B implementation:
+  - verified Preview auth env vars by presence only
+  - verified dashboard auth tables
+  - at least one active Preview `admin_ceo` dashboard user
+  - non-production test mailbox/account for OTP
+  - approved cleanup/revocation process
+- New Phase B plan:
+  - docs/superpowers/plans/2026-07-12-dashboard-auth-phase-b-basic-auth-removal-plan.md
 
 Loop readiness audit:
 - 100/100 (L3), report-only safe start
