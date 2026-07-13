@@ -6,7 +6,24 @@ import {
   buildPreviewDemoDataset,
   type PreviewDemoStatus,
 } from "./dataset";
-import { resolvePreviewDemoGuard } from "../../scripts/preview-demo/seed-preview-demo";
+import {
+  PREVIEW_DEMO_CHECKPOINT_CLEANUP,
+  PREVIEW_DEMO_EMAIL_CLEANUP,
+  resolvePreviewDemoGuard,
+} from "../../scripts/preview-demo/seed-preview-demo";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function utcDayStart(now: Date): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+}
+
+function countInUtcDay(emails: { received_at: string }[], dayStartMs: number): number {
+  return emails.filter((row) => {
+    const t = new Date(row.received_at).getTime();
+    return t >= dayStartMs && t < dayStartMs + DAY_MS;
+  }).length;
+}
 
 const NOW = new Date("2026-07-13T12:00:00.000Z");
 const ALLOWED_STATUSES: PreviewDemoStatus[] = [
@@ -67,15 +84,40 @@ describe("preview demo dataset", () => {
     expect(emails.some((row) => row.deadline === tomorrow)).toBe(true);
   });
 
-  it("spreads received_at across today, yesterday, last 7/30 days, and older", () => {
-    const dayMs = 24 * 60 * 60 * 1000;
-    const ageDays = (iso: string) => (NOW.getTime() - new Date(iso).getTime()) / dayMs;
+  it("always places at least one row in UTC today and one in UTC yesterday", () => {
+    const startToday = utcDayStart(NOW);
+    expect(countInUtcDay(emails, startToday)).toBeGreaterThanOrEqual(1);
+    expect(countInUtcDay(emails, startToday - DAY_MS)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps UTC today/yesterday coverage at midnight boundaries", () => {
+    for (const iso of ["2026-07-13T00:00:30.000Z", "2026-07-13T23:59:30.000Z", "2026-07-13T12:00:00.000Z"]) {
+      const now = new Date(iso);
+      const built = buildPreviewDemoDataset(now).emails;
+      const startToday = utcDayStart(now);
+      expect(countInUtcDay(built, startToday)).toBeGreaterThanOrEqual(1);
+      expect(countInUtcDay(built, startToday - DAY_MS)).toBeGreaterThanOrEqual(1);
+      // "Today" rows must never be in the future.
+      const maxReceived = Math.max(...built.map((row) => new Date(row.received_at).getTime()));
+      expect(maxReceived).toBeLessThanOrEqual(now.getTime());
+    }
+  });
+
+  it("spreads received_at across last 7 days, last 30 days, and older", () => {
+    const ageDays = (iso: string) => (NOW.getTime() - new Date(iso).getTime()) / DAY_MS;
     const ages = emails.map((row) => ageDays(row.received_at));
-    expect(ages.some((d) => d < 1)).toBe(true); // today
-    expect(ages.some((d) => d >= 1 && d < 2)).toBe(true); // yesterday
-    expect(ages.some((d) => d >= 2 && d < 7)).toBe(true); // last 7d
-    expect(ages.some((d) => d >= 7 && d < 30)).toBe(true); // last 30d
-    expect(ages.some((d) => d >= 30)).toBe(true); // older
+    expect(ages.some((d) => d >= 2 && d < 7)).toBe(true);
+    expect(ages.some((d) => d >= 7 && d < 30)).toBe(true);
+    expect(ages.some((d) => d >= 30)).toBe(true);
+  });
+
+  it("populates a valid synthetic original_recipient on every row", () => {
+    for (const row of emails) {
+      expect(row.original_recipient).toBeTruthy();
+      expect(row.original_recipient.endsWith("@example.test")).toBe(true);
+    }
+    const distinct = new Set(emails.map((row) => row.original_recipient));
+    expect(distinct.size).toBeGreaterThanOrEqual(2);
   });
 
   it("sets classified_at only on classified rows and queue timestamps on their statuses", () => {
@@ -123,5 +165,19 @@ describe("preview demo guard", () => {
       ok: false,
       code: "MISSING_SERVICE_ROLE_KEY",
     });
+  });
+});
+
+describe("preview demo cleanup scoping", () => {
+  it("scopes email cleanup strictly to the marker", () => {
+    expect(PREVIEW_DEMO_EMAIL_CLEANUP).toEqual({ column: "folder_id", value: PREVIEW_DEMO_MARKER });
+  });
+
+  it("limits checkpoint cleanup to the marker AND the synthetic checkpoint identity", () => {
+    const byColumn = Object.fromEntries(PREVIEW_DEMO_CHECKPOINT_CLEANUP.map((f) => [f.column, f.value]));
+    expect(byColumn.last_seen_message_id).toBe(PREVIEW_DEMO_MARKER);
+    expect(byColumn.mailbox_email).toBe(PREVIEW_DEMO_CHECKPOINT_MAILBOX);
+    // Exactly these two narrowing conditions — nothing broader.
+    expect(PREVIEW_DEMO_CHECKPOINT_CLEANUP).toHaveLength(2);
   });
 });

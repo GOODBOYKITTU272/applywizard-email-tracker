@@ -8,6 +8,14 @@ import {
   buildPreviewDemoDataset,
 } from "@/lib/previewDemo/dataset";
 
+// Delete filters kept as data so they are unit-testable and provably narrow:
+// emails only by marker; the checkpoint only by marker AND its synthetic identity.
+export const PREVIEW_DEMO_EMAIL_CLEANUP = { column: "folder_id", value: PREVIEW_DEMO_MARKER } as const;
+export const PREVIEW_DEMO_CHECKPOINT_CLEANUP = [
+  { column: "last_seen_message_id", value: PREVIEW_DEMO_MARKER },
+  { column: "mailbox_email", value: PREVIEW_DEMO_CHECKPOINT_MAILBOX },
+] as const;
+
 // Hard-coded refs so the guard cannot be tricked by environment drift. The
 // service-role key comes only from the operator env — never committed here.
 const PREVIEW_REF = "obirkjbzpykoehxacaaj";
@@ -83,17 +91,22 @@ async function main(): Promise<void> {
   });
 
   // Cleanup is scoped strictly to the marker — never touches unrelated rows.
-  const removedEmails = await supabase.from("zoho_email_metadata").delete().eq("folder_id", PREVIEW_DEMO_MARKER).select("id");
+  const removedEmails = await supabase
+    .from("zoho_email_metadata")
+    .delete()
+    .eq(PREVIEW_DEMO_EMAIL_CLEANUP.column, PREVIEW_DEMO_EMAIL_CLEANUP.value)
+    .select("id");
   if (removedEmails.error) {
     console.error("[PreviewDemo] failed code=EMAIL_DELETE_FAILED");
     process.exitCode = 1;
     return;
   }
-  const removedCheckpoint = await supabase
-    .from("zoho_sync_checkpoints")
-    .delete()
-    .eq("last_seen_message_id", PREVIEW_DEMO_MARKER)
-    .select("mailbox_email");
+  // The checkpoint delete requires BOTH the marker and the synthetic mailbox.
+  let checkpointDelete = supabase.from("zoho_sync_checkpoints").delete();
+  for (const filter of PREVIEW_DEMO_CHECKPOINT_CLEANUP) {
+    checkpointDelete = checkpointDelete.eq(filter.column, filter.value);
+  }
+  const removedCheckpoint = await checkpointDelete.select("mailbox_email");
   if (removedCheckpoint.error) {
     console.error("[PreviewDemo] failed code=CHECKPOINT_DELETE_FAILED");
     process.exitCode = 1;

@@ -9,6 +9,15 @@ export const PREVIEW_DEMO_CHECKPOINT_MAILBOX = "preview-demo-sync@example.test";
 
 const MAILBOXES = ["demo.user1@example.test", "demo.user2@example.test"] as const;
 const COMPANIES = ["Northstar Labs", "BluePeak Systems", "CedarWorks", "DemoCorp", "SampleTech"] as const;
+// Fictional client recipients so the Master Client Tracking table (grouped by
+// original_recipient) shows multiple synthetic clients with meaningful totals.
+const CLIENTS = ["client.alpha@example.test", "client.beta@example.test", "client.gamma@example.test"] as const;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfUtcDay(now: Date): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+}
 
 const SUBJECTS = {
   interview_invite: "Synthetic interview invitation",
@@ -79,6 +88,7 @@ export interface PreviewDemoEmailRow {
   message_id: string;
   sender: string;
   subject: string;
+  original_recipient: string;
   received_at: string;
   folder_id: string;
   folder_name: string;
@@ -115,21 +125,30 @@ function companySlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
-function buildEmailRow(spec: RowSpec, index: number, now: Date): PreviewDemoEmailRow {
+function buildEmailRow(spec: RowSpec, index: number, now: Date, startOfToday: number): PreviewDemoEmailRow {
   const nowMs = now.getTime();
-  const dayMs = 24 * 60 * 60 * 1000;
-  // Deterministic within-day jitter so rows are not all at midnight.
-  const receivedMs = nowMs - spec.daysAgo * dayMs - ((index % 6) + 2) * 60 * 60 * 1000;
+  // Anchor to UTC calendar buckets so coverage is stable at any seed time.
+  // "Today" rows land between UTC midnight and now (never in the future or in
+  // yesterday); older rows sit at midday of their UTC day.
+  let receivedMs: number;
+  if (spec.daysAgo === 0) {
+    const elapsedToday = nowMs - startOfToday;
+    const fraction = ((index % 5) + 1) / 6;
+    receivedMs = startOfToday + Math.floor(elapsedToday * fraction);
+  } else {
+    receivedMs = startOfToday - spec.daysAgo * DAY_MS + 12 * 60 * 60 * 1000;
+  }
   const receivedAt = new Date(receivedMs).toISOString();
   const company = COMPANIES[spec.company];
 
-  const tomorrow = new Date(nowMs + dayMs).toISOString().slice(0, 10);
+  const tomorrow = new Date(startOfToday + DAY_MS).toISOString().slice(0, 10);
 
   const row: PreviewDemoEmailRow = {
     mailbox_email: MAILBOXES[spec.mailbox],
     message_id: `preview-demo-${String(index + 1).padStart(4, "0")}`,
     sender: `talent@${companySlug(company)}.example.test`,
     subject: SUBJECTS[spec.subject],
+    original_recipient: CLIENTS[index % CLIENTS.length],
     received_at: receivedAt,
     folder_id: PREVIEW_DEMO_MARKER,
     folder_name: PREVIEW_DEMO_FOLDER_NAME,
@@ -178,7 +197,8 @@ export function buildPreviewDemoDataset(now: Date = new Date()): {
   emails: PreviewDemoEmailRow[];
   checkpoint: PreviewDemoCheckpointRow;
 } {
-  const emails = ROW_SPECS.map((spec, index) => buildEmailRow(spec, index, now));
+  const startOfToday = startOfUtcDay(now);
+  const emails = ROW_SPECS.map((spec, index) => buildEmailRow(spec, index, now, startOfToday));
   const latestReceived = emails.reduce(
     (latest, row) => (row.received_at > latest ? row.received_at : latest),
     emails[0].received_at,
