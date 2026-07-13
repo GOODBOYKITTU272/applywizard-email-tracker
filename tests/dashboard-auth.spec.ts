@@ -242,6 +242,49 @@ test.describe("Dashboard auth frontend", () => {
     await expect(page.getByTestId("dashboard-auth-show-setup-key")).toBeVisible();
   });
 
+  test("returning user: email OTP then authenticator code, no QR setup, then logout", async ({ page }) => {
+    const records: RouteRecord[] = [];
+    await installAuthMocks(
+      page,
+      { verifyOtp: { ok: true, stage: "totp_required", challenge: "challenge-login" } },
+      records,
+    );
+    let logoutCalled = false;
+    await page.route("**/api/dashboard/auth/logout", async (route) => {
+      logoutCalled = true;
+      await route.fulfill(jsonResponse({ ok: true }));
+    });
+
+    await page.goto("/dashboard/login");
+    await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
+    await page.getByRole("button", { name: "Send OTP" }).click();
+
+    // A fresh email OTP is still required for the returning user.
+    await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "otp");
+    await page.getByTestId("dashboard-auth-otp").fill("123456");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    // The authenticator login screen appears — not the QR/setup screen.
+    await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "login");
+    await expect(page.getByRole("heading", { name: "Enter your authenticator code" })).toBeVisible();
+    await expect(page.getByTestId("dashboard-auth-login-code")).toBeVisible();
+    await expect(page.getByTestId("dashboard-auth-qr")).toHaveCount(0);
+    await expect(page.getByTestId("dashboard-auth-show-setup-key")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Scan with your authenticator app" })).toHaveCount(0);
+
+    await page.getByTestId("dashboard-auth-login-code").fill("654321");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.waitForURL("**/overview");
+    await expect(page).toHaveURL(/\/overview$/);
+
+    const logoutOk = await page.evaluate(async () => (await fetch("/api/dashboard/auth/logout", { method: "POST" })).ok);
+    expect(logoutOk).toBe(true);
+    expect(logoutCalled).toBe(true);
+
+    // Email OTP was requested and verified; TOTP verified; no setup/registration occurred.
+    expect(records.map((record) => record.path)).toEqual(["request-otp", "verify-otp", "verify-totp"]);
+  });
+
   test("completes the returning-user login flow", async ({ page }) => {
     const records: RouteRecord[] = [];
     await installAuthMocks(
