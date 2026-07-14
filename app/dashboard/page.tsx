@@ -1,9 +1,12 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { requireDashboardSession } from "@/lib/dashboardAuth/requireDashboardSession";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function DashboardPage() {
+  await requireDashboardSession();
+
   const expectedSecret = process.env.DASHBOARD_SECRET;
 
 
@@ -523,7 +526,27 @@ export default async function DashboardPage() {
           border: 1px solid rgba(245, 158, 11, 0.25);
           animation: pulse 2s ease-in-out infinite;
         }
+        .status-tag.status-processing {
+          background: rgba(59, 130, 246, 0.12);
+          color: #60a5fa;
+          border: 1px solid rgba(59, 130, 246, 0.25);
+        }
+        .status-tag.status-retry_scheduled {
+          background: rgba(245, 158, 11, 0.12);
+          color: #f59e0b;
+          border: 1px solid rgba(245, 158, 11, 0.25);
+        }
+        .status-tag.status-review {
+          background: rgba(251, 191, 36, 0.12);
+          color: #fbbf24;
+          border: 1px solid rgba(251, 191, 36, 0.25);
+        }
         .status-tag.status-failed {
+          background: rgba(239, 68, 68, 0.12);
+          color: #ef4444;
+          border: 1px solid rgba(239, 68, 68, 0.25);
+        }
+        .status-tag.status-dead_letter {
           background: rgba(239, 68, 68, 0.12);
           color: #ef4444;
           border: 1px solid rgba(239, 68, 68, 0.25);

@@ -168,23 +168,43 @@ type SystemMatch = {
 function matchSystem(t: string): SystemMatch {
   for (const s of OTP_SIGNALS) {
     if (t.includes(s))
-      return { category: "otp_verification", confidence: 0.97, reason: `OTP signal: "${s}"` };
+      return {
+        category: "otp_verification",
+        confidence: 0.97,
+        reason: "Deterministic system classification matched.",
+      };
   }
   for (const s of EMAIL_VERIFY_SIGNALS) {
     if (t.includes(s))
-      return { category: "email_verification", confidence: 0.97, reason: `Email-verify signal: "${s}"` };
+      return {
+        category: "email_verification",
+        confidence: 0.97,
+        reason: "Deterministic system classification matched.",
+      };
   }
   for (const s of ACCOUNT_CREATED_SIGNALS) {
     if (t.includes(s))
-      return { category: "account_created", confidence: 0.97, reason: `Account-created signal: "${s}"` };
+      return {
+        category: "account_created",
+        confidence: 0.97,
+        reason: "Deterministic system classification matched.",
+      };
   }
   for (const s of SYSTEM_SIGNALS) {
     if (t.includes(s))
-      return { category: "system_notification", confidence: 0.95, reason: `System signal: "${s}"` };
+      return {
+        category: "system_notification",
+        confidence: 0.95,
+        reason: "Deterministic system classification matched.",
+      };
   }
   for (const s of SPAM_SIGNALS) {
     if (t.includes(s))
-      return { category: "spam_or_irrelevant", confidence: 0.9, reason: `Spam signal: "${s}"` };
+      return {
+        category: "spam_or_irrelevant",
+        confidence: 0.9,
+        reason: "Deterministic system classification matched.",
+      };
   }
   return null;
 }
@@ -320,7 +340,11 @@ function matchJob(
   for (const rule of JOB_RULES) {
     for (const sig of rule.signals) {
       if (t.includes(sig)) {
-        return { category: rule.category, confidence: rule.confidence, reason: `Job rule: "${sig}"` };
+        return {
+          category: rule.category,
+          confidence: rule.confidence,
+          reason: "Deterministic job classification matched.",
+        };
       }
     }
   }

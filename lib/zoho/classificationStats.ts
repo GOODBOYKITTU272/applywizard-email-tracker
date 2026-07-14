@@ -6,6 +6,12 @@ import "server-only";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export interface ClassificationStats {
+  pending_count: number;
+  processing_count: number;
+  retry_scheduled_count: number;
+  classified_count: number;
+  review_count: number;
+  dead_letter_count: number;
   total_classified: number;
   deterministic_count: number;
   regex_count: number;
@@ -37,6 +43,12 @@ export async function getClassificationStats(): Promise<ClassificationStats> {
   const supabase = createSupabaseServerClient();
 
   const [
+    pending_count,
+    processing_count,
+    retry_scheduled_count,
+    classified_count,
+    review_count,
+    dead_letter_count,
     total_classified,
     deterministic_count,
     regex_count,
@@ -45,20 +57,30 @@ export async function getClassificationStats(): Promise<ClassificationStats> {
     review_required_count,
     system_notification_count,
     spam_or_irrelevant_count,
-    errors_count,
   ] = await Promise.all([
+    countWhere(supabase, { classification_status: "pending" }),
+    countWhere(supabase, { classification_status: "processing" }),
+    countWhere(supabase, { classification_status: "retry_scheduled" }),
+    countWhere(supabase, { classification_status: "classified" }),
+    countWhere(supabase, { classification_status: "review" }),
+    countWhere(supabase, { classification_status: "dead_letter" }),
     countWhere(supabase, { classification_status: "classified" }),
     countWhere(supabase, { classification_status: "classified", classifier_source: "deterministic" }),
     countWhere(supabase, { classification_status: "classified", classifier_source: "regex" }),
     countWhere(supabase, { classification_status: "classified", classifier_source: "ai" }),
     countWhere(supabase, { classification_status: "classified", category: "unknown" }),
-    countWhere(supabase, { classification_status: "classified", needs_human_review: true }),
+    countWhere(supabase, { classification_status: "review" }),
     countWhere(supabase, { classification_status: "classified", category: "system_notification" }),
     countWhere(supabase, { classification_status: "classified", category: "spam_or_irrelevant" }),
-    countWhere(supabase, { classification_status: "failed" }),
   ]);
 
   return {
+    pending_count,
+    processing_count,
+    retry_scheduled_count,
+    classified_count,
+    review_count,
+    dead_letter_count,
     total_classified,
     deterministic_count,
     regex_count,
@@ -67,6 +89,6 @@ export async function getClassificationStats(): Promise<ClassificationStats> {
     review_required_count,
     system_notification_count,
     spam_or_irrelevant_count,
-    errors_count,
+    errors_count: dead_letter_count,
   };
 }

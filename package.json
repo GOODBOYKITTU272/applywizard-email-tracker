@@ -12,14 +12,20 @@
     "test:unit:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:report": "playwright show-report"
+    "test:e2e:report": "playwright show-report",
+    "backfill:zoho": "tsx scripts/backfill-zoho-history.ts",
+    "release:historical": "tsx scripts/release-historical-batch.ts",
+    "worker:once": "tsc -p tsconfig.worker.json && node .worker-dist/scripts/worker-once.js",
+    "worker:start": "tsx worker/index.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.2",
     "next": "16.2.9",
     "openai": "^6.44.0",
+    "qrcode.react": "^4.2.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "tsx": "^4.20.6"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.0",

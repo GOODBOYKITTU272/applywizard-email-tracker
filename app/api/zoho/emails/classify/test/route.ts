@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { classifyEmails } from "@/lib/zoho/classifyEmails";
+import { classifyQueue } from "@/lib/worker-core/classifyQueue";
 
 export async function POST() {
   try {
-    const result = await classifyEmails();
+    const result = await classifyQueue();
     return NextResponse.json({ message: "Classification complete", ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

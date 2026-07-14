@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { syncEmails } from "@/lib/zoho/syncEmails";
+import { syncTrackerMailbox } from "@/lib/worker-core/syncTrackerMailbox";
 
 export async function POST() {
   try {
-    const result = await syncEmails();
+    const result = await syncTrackerMailbox();
     return NextResponse.json({ message: "Sync complete", ...result });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

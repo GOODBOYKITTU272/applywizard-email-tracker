@@ -2,6 +2,8 @@ import { classifyEmail } from "./emailClassification";
 import type { EmailCategory, Priority } from "./types";
 import type { Application } from "@/lib/mockData";
 
+type RuntimeQueueStatus = Application["status"];
+
 export interface DerivedClassification {
   category: EmailCategory;
   confidence: number;
@@ -44,6 +46,22 @@ const PRIORITY_ORDER: Record<Priority, number> = {
   low: 3,
 };
 
+function normalizeMockStatus(
+  status: RuntimeQueueStatus,
+  needsHumanReview: boolean,
+): RuntimeQueueStatus {
+  if (
+    status === "pending" ||
+    status === "processing" ||
+    status === "retry_scheduled" ||
+    status === "dead_letter"
+  ) {
+    return status;
+  }
+
+  return needsHumanReview ? "review" : "classified";
+}
+
 export function classifyApplications(
   apps: Application[]
 ): ClassifiedApplication[] {
@@ -62,7 +80,11 @@ export function classifyApplications(
       deadline: result.deadline,
       reason: result.reason,
     };
-    return { ...app, derived };
+    return {
+      ...app,
+      status: normalizeMockStatus(app.status, derived.needs_human_review),
+      derived,
+    };
   });
 }
 

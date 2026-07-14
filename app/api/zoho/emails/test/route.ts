@@ -26,12 +26,21 @@ export async function GET() {
   }
 
   const supabase = createSupabaseServerClient();
+  const trackerMailbox = process.env.ZOHO_SYNC_MAILBOX?.toLowerCase().trim();
 
-  // Find the latest active Zoho connection
+  if (!trackerMailbox) {
+    return NextResponse.json(
+      { error: "ZOHO_SYNC_MAILBOX is not configured on the server." },
+      { status: 500 },
+    );
+  }
+
+  // Find the active tracker-mailbox connection only
   const { data: connection, error: connError } = await supabase
     .from("zoho_connections")
     .select("*")
     .eq("status", "active")
+    .eq("email_address", trackerMailbox)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -47,6 +56,13 @@ export async function GET() {
   if (!connection) {
     return NextResponse.json(
       { error: "No active Zoho connection found. Please log in first." },
+      { status: 404 },
+    );
+  }
+
+  if (connection.email_address !== trackerMailbox) {
+    return NextResponse.json(
+      { error: "Tracker mailbox connection mismatch." },
       { status: 404 },
     );
   }

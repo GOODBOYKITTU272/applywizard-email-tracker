@@ -27,6 +27,8 @@ describe("System protection — OTP / verification / account", () => {
     expect(r.priority).toBe("low");
     expect(r.needs_human_review).toBe(false);
     expect(r.deadline).toBeNull();
+    expect(r.reason).toBe("Deterministic system classification matched.");
+    expect(r.reason).not.toContain("482910");
   });
 
   test("TC02 Verification code subject → otp_verification", () => {
@@ -101,6 +103,8 @@ describe("System protection — system_notification", () => {
       "support@applywizard.ai"
     );
     expect(r.category).toBe("system_notification");
+    expect(r.reason).toBe("Deterministic system classification matched.");
+    expect(r.reason).not.toContain("password");
   });
 
   test("TC09 Invoice email → system_notification", () => {
@@ -167,6 +171,8 @@ describe("Job rules", () => {
     expect(r.category).toBe("application_received");
     expect(r.priority).toBe("normal");
     expect(r.needs_human_review).toBe(false);
+    expect(r.reason).toBe("Deterministic job classification matched.");
+    expect(r.reason).not.toContain("thank you for applying");
   });
 
   test("TC15 Interview invitation (no deadline) → high, review true", () => {

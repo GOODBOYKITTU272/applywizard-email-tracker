@@ -64,7 +64,13 @@ export interface Application {
     | "spam_or_irrelevant"
     | "unknown";
   confidence: number;
-  status: "pending" | "classified" | "failed";
+  status:
+    | "pending"
+    | "processing"
+    | "retry_scheduled"
+    | "classified"
+    | "review"
+    | "dead_letter";
   needsHumanReview: boolean;
   actionRequired: string | null;
   deadline: string | null;
@@ -477,7 +483,7 @@ export const mockApplications: Application[] = [
     folderName: "Inbox",
     category: "unknown",
     confidence: 0.35,
-    status: "failed",
+    status: "review",
     needsHumanReview: true,
     actionRequired: "Manually classify and review email content.",
     deadline: null,

@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import type { ClassificationResult } from "@/lib/classify/types";
+import { SAFE_REASON_FALLBACK } from "@/lib/classify/sanitizeReason";
 
 // ── Shared mock state ─────────────────────────────────────────────────────────
 
@@ -15,6 +16,8 @@ const mockClassifyEmail = vi.fn<[{ subject: string; body: string; sender?: strin
 const mockTryRegexExtract = vi.fn<[{ subject: string; body: string }], ClassificationResult | null>();
 const mockClassifyWithAI = vi.fn<[{ subject: string; body: string }], Promise<ClassificationResult>>();
 const mockSupabaseUpdate = vi.fn().mockResolvedValue({ error: null });
+const mockClaimEmailsForClassification = vi.fn();
+const mockUpdateClaimedEmail = vi.fn();
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -32,17 +35,31 @@ vi.mock("@/lib/classify/aiClassifier", () => ({
   classifyWithAI: mockClassifyWithAI,
 }));
 
-vi.mock("@/lib/supabase/server", () => ({
-  createSupabaseServerClient: () => ({
+vi.mock("@/lib/zoho/queueFoundation", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/zoho/queueFoundation")>(
+    "@/lib/zoho/queueFoundation",
+  );
+
+  return {
+    ...actual,
+    claimEmailsForClassification: mockClaimEmailsForClassification,
+    updateClaimedEmail: mockUpdateClaimedEmail,
+  };
+});
+
+vi.mock("@/lib/supabase/serviceRole", () => ({
+  createSupabaseServiceRoleClient: () => ({
     from: (table: string) => ({
       select: () => ({
         eq: () => ({
-          order: () => ({
-            limit: () => ({
-              maybeSingle: () =>
-                table === "zoho_connections"
-                  ? Promise.resolve({ data: MOCK_CONNECTION, error: null })
-                  : Promise.resolve({ data: null, error: null }),
+          eq: () => ({
+            order: () => ({
+              limit: () => ({
+                maybeSingle: () =>
+                  table === "zoho_connections"
+                    ? Promise.resolve({ data: MOCK_CONNECTION, error: null })
+                    : Promise.resolve({ data: null, error: null }),
+              }),
             }),
           }),
         }),
@@ -98,9 +115,11 @@ function makeSupabaseMock(pendingRows: unknown[]) {
         return {
           select: () => ({
             eq: () => ({
-              order: () => ({
-                limit: () => ({
-                  maybeSingle: () => Promise.resolve({ data: MOCK_CONNECTION, error: null }),
+              eq: () => ({
+                order: () => ({
+                  limit: () => ({
+                    maybeSingle: () => Promise.resolve({ data: MOCK_CONNECTION, error: null }),
+                  }),
                 }),
               }),
             }),
@@ -153,6 +172,7 @@ function makeZohoFetchResponse(subject: string, bodyHtml: string, sender: string
 describe("Phase 3C pipeline decision logic", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.ZOHO_SYNC_MAILBOX = "test@applywizard.ai";
   });
 
   describe("deterministic classifier wins at high confidence", () => {
@@ -314,6 +334,39 @@ describe("Phase 3C pipeline decision logic", () => {
       expect(call).not.toHaveProperty("body");
       expect(call).not.toHaveProperty("bodyText");
       expect(call).not.toHaveProperty("content");
+      expect(call).not.toHaveProperty("rawHeaders");
+      expect(call).not.toHaveProperty("headerContent");
+      expect(call).not.toHaveProperty("verification_code");
+      expect(call).not.toHaveProperty("attachments");
+    });
+
+    it("includes company_name and job_title in the write-back payload when present", () => {
+      const payload: Record<string, unknown> = {
+        category: "interview_invite",
+        confidence: 0.93,
+        classifier_source: "ai",
+        classification_status: "classified",
+        company_name: "State Farm",
+        job_title: "Data Analyst",
+      };
+      mockSupabaseUpdate(payload);
+      expect(mockSupabaseUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          company_name: "State Farm",
+          job_title: "Data Analyst",
+        }),
+      );
+    });
+
+    it("uses review status when a result still needs human review", () => {
+      const payload: Record<string, unknown> = {
+        needs_human_review: true,
+        classification_status: "review",
+      };
+      mockSupabaseUpdate(payload);
+      expect(mockSupabaseUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ classification_status: "review" }),
+      );
     });
   });
 });
@@ -355,6 +408,18 @@ describe("Phase 3D dry-run and mailbox guardrails (decision logic)", () => {
       await expect(
         classifyEmails({ dryRun: true, mailbox: "a@x.com;b@x.com" }),
       ).rejects.toThrow(/only one mailbox/i);
+    });
+
+    it("rejects dry-run when the mailbox does not match the configured tracker mailbox", async () => {
+      process.env.ZOHO_SYNC_MAILBOX = "tracker@applywizard.ai";
+      process.env.ZOHO_CLIENT_ID = "cid";
+      process.env.ZOHO_CLIENT_SECRET = "secret";
+      process.env.ZOHO_ACCOUNTS_BASE_URL = "https://accounts.zoho.test";
+      process.env.ZOHO_MAIL_BASE_URL = "https://mail.zoho.test";
+      const { classifyEmails } = await import("@/lib/zoho/classifyEmails");
+      await expect(
+        classifyEmails({ dryRun: true, mailbox: "other@applywizard.ai" }),
+      ).rejects.toThrow(/must match the configured tracker mailbox/i);
     });
   });
 
@@ -492,6 +557,238 @@ describe("Phase 3D dry-run and mailbox guardrails (decision logic)", () => {
       expect(src).toMatch(/client_id:\s*null/);
       // And must NOT contain client_id assigned from a variable (mappingResult, etc.)
       expect(src).not.toMatch(/client_id:\s*mapping/);
+    });
+
+    it("ZOHO_CLASSIFY_MAX_PER_RUN configures the pending query limit", () => {
+      const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
+      // Env var must be read
+      expect(src).toContain("ZOHO_CLASSIFY_MAX_PER_RUN");
+      // Variable must be used in the atomic claim call
+      expect(src).toContain("claimEmailsForClassification");
+      expect(src).toContain("classifyMaxPerRun");
+      // Default must be 50
+      expect(src).toContain('"50"');
+    });
+
+    it("ClassifyResult includes review_required field", () => {
+      const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
+      expect(src).toContain("review_required");
+      expect(src).toContain("reviewRequiredCount");
+    });
+
+    it("live path persists review instead of classified when human review is required", () => {
+      const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
+      expect(src).toContain('classification.needs_human_review ? "review" : "classified"');
+    });
+
+    it("sanitizes unsafe AI reasons before the live persistence update", async () => {
+      process.env.ZOHO_SYNC_MAILBOX = "test@applywizard.ai";
+      process.env.ZOHO_CLIENT_ID = "cid";
+      process.env.ZOHO_CLIENT_SECRET = "secret";
+      process.env.ZOHO_ACCOUNTS_BASE_URL = "https://accounts.zoho.test";
+      process.env.ZOHO_MAIL_BASE_URL = "https://mail.zoho.test";
+      process.env.ZOHO_CLASSIFY_MAX_PER_RUN = "5";
+
+      mockClaimEmailsForClassification.mockResolvedValue([
+        {
+          id: "row-1",
+          message_id: "msg-1",
+          folder_id: "fold-1",
+          sender: "sender@company.test",
+          received_at: "2026-06-30T04:00:00.000Z",
+          attempt_count: 0,
+        },
+      ]);
+      mockUpdateClaimedEmail.mockResolvedValue(true);
+      mockClassifyEmail.mockReturnValue({
+        ...BASE_RESULT,
+        category: "unknown",
+        confidence: 0.2,
+        needs_human_review: true,
+      });
+      mockTryRegexExtract.mockReturnValue(null);
+      mockClassifyWithAI.mockResolvedValue({
+        ...BASE_RESULT,
+        category: "recruiter_reply",
+        confidence: 0.82,
+        needs_human_review: true,
+        reason:
+          'Provider output "confidential reset flow" with access token marker, test@example.com, 482910, and https://unsafe.test/path',
+      });
+
+      const fetchMock = vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/details")) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: { code: 200, description: "success" },
+              data: {
+                messageId: "msg-1",
+                sender: "sender@company.test",
+                fromAddress: "sender@company.test",
+                subject: "Following up on your application",
+                receivedTime: "1719043200000",
+                toAddress: "tracker@applywizard.ai",
+              },
+            }),
+          };
+        }
+
+        if (url.includes("/content")) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: { code: 200, description: "success" },
+              data: {
+                messageId: "msg-1",
+                content: "<p>Generic safe body</p>",
+              },
+            }),
+          };
+        }
+
+        if (url.includes("/header?raw=true")) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: { code: 200, description: "success" },
+              data: {
+                headerContent: "Delivered-To: tracker@applywizard.ai",
+              },
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as typeof fetch;
+
+      try {
+        const { classifyEmails } = await import("@/lib/zoho/classifyEmails");
+        await classifyEmails();
+      } finally {
+        global.fetch = originalFetch;
+      }
+
+      const persistenceCall = mockUpdateClaimedEmail.mock.calls.find(
+        ([, args]) => args?.payload?.reason !== undefined,
+      );
+      const persistedReason = persistenceCall?.[1]?.payload?.reason;
+
+      expect(persistedReason).toBe(SAFE_REASON_FALLBACK);
+      expect(String(persistedReason)).not.toContain("https://unsafe.test/path");
+      expect(String(persistedReason)).not.toContain("test@example.com");
+      expect(String(persistedReason)).not.toContain("482910");
+      expect(String(persistedReason).toLowerCase()).not.toContain("access token");
+    });
+
+    it("persists company_name and job_title from AI output on the live path", async () => {
+      process.env.ZOHO_SYNC_MAILBOX = "test@applywizard.ai";
+      process.env.ZOHO_CLIENT_ID = "cid";
+      process.env.ZOHO_CLIENT_SECRET = "secret";
+      process.env.ZOHO_ACCOUNTS_BASE_URL = "https://accounts.zoho.test";
+      process.env.ZOHO_MAIL_BASE_URL = "https://mail.zoho.test";
+      process.env.ZOHO_CLASSIFY_MAX_PER_RUN = "5";
+
+      mockClaimEmailsForClassification.mockResolvedValue([
+        {
+          id: "row-2",
+          message_id: "msg-2",
+          folder_id: "fold-1",
+          sender: "sender@company.test",
+          received_at: "2026-06-30T04:00:00.000Z",
+          attempt_count: 0,
+        },
+      ]);
+      mockUpdateClaimedEmail.mockResolvedValue(true);
+      mockClassifyEmail.mockReturnValue({
+        ...BASE_RESULT,
+        category: "unknown",
+        confidence: 0.2,
+        needs_human_review: true,
+      });
+      mockTryRegexExtract.mockReturnValue(null);
+      mockClassifyWithAI.mockResolvedValue({
+        ...BASE_RESULT,
+        category: "interview_invite",
+        confidence: 0.9,
+        needs_human_review: false,
+        company_name: "State Farm",
+        job_title: "Data Analyst",
+      });
+
+      const fetchMock = vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/details")) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: { code: 200, description: "success" },
+              data: {
+                messageId: "msg-2",
+                sender: "sender@company.test",
+                fromAddress: "sender@company.test",
+                subject: "Interview invitation",
+                receivedTime: "1719043200000",
+                toAddress: "tracker@applywizard.ai",
+              },
+            }),
+          };
+        }
+
+        if (url.includes("/content")) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: { code: 200, description: "success" },
+              data: {
+                messageId: "msg-2",
+                content: "<p>Generic safe body</p>",
+              },
+            }),
+          };
+        }
+
+        if (url.includes("/header?raw=true")) {
+          return {
+            ok: true,
+            json: async () => ({
+              status: { code: 200, description: "success" },
+              data: {
+                headerContent: "Delivered-To: tracker@applywizard.ai",
+              },
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected fetch URL: ${url}`);
+      });
+
+      const originalFetch = global.fetch;
+      global.fetch = fetchMock as typeof fetch;
+
+      try {
+        const { classifyEmails } = await import("@/lib/zoho/classifyEmails");
+        await classifyEmails();
+      } finally {
+        global.fetch = originalFetch;
+      }
+
+      const persistenceCall = mockUpdateClaimedEmail.mock.calls.find(
+        ([, args]) => args?.payload?.company_name !== undefined,
+      );
+
+      expect(persistenceCall?.[1]?.payload?.company_name).toBe("State Farm");
+      expect(persistenceCall?.[1]?.payload?.job_title).toBe("Data Analyst");
+    });
+
+    it("failure path persists only fixed safe messages, never raw exception text", () => {
+      const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
+      expect(src).toContain("getSafeProcessingError");
+      expect(src).not.toContain("last_error_message_safe: errorMessage.slice(0, 500)");
     });
   });
 });

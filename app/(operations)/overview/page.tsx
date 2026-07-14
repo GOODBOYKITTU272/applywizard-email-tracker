@@ -1,1058 +1,404 @@
-"use client";
-
-import React, { useState } from "react";
 import Link from "next/link";
-import { mockApplications, mockClients, mockCAs } from "@/lib/mockData";
-import { classifyApplications, REVIEW_CATEGORIES } from "@/lib/classify/classifyMockEmails";
-import {
-  IconMail,
-  IconApplications,
-  IconClients,
-  IconAssessment,
-  IconRejection,
-  IconWarning,
-  IconRefresh,
-} from "@/components/icons";
 
-export default function OverviewPage() {
-  const [selectedCA, setSelectedCA] = useState("all");
-  const [selectedStatus, setSelectedStatus] = useState("all");
-  const [dateRange, setDateRange] = useState("last_7_days");
-  const [isRefreshing, setIsRefreshing] = useState(false);
+import { CooBadge, EmptyState, MetricCard, SectionBlock } from "@/components/coo";
+import { requireDashboardSession } from "@/lib/dashboardAuth/requireDashboardSession";
+import { getOverviewWorkspaceData } from "@/lib/zoho/cooWorkspace";
 
-  // ── Derived classification (single source of truth) ─────────────────────────
-  const classifiedApps = classifyApplications(mockApplications);
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-  // ── Data Calculations ────────────────────────────────────────────────────────
-  const totalEmails = classifiedApps.length;
-  const totalAppsCount = classifiedApps.filter(
-    (a) => a.derived.category === "application_received"
-  ).length;
-  const interviewsCount = classifiedApps.filter(
-    (a) => a.derived.category === "interview_invite"
-  ).length;
-  const assessmentsCount = classifiedApps.filter(
-    (a) => a.derived.category === "assessment"
-  ).length;
-  const rejectionsCount = classifiedApps.filter(
-    (a) => a.derived.category === "rejection"
-  ).length;
-  const reviewRequiredCount = classifiedApps.filter(
-    (a) => a.derived.needs_human_review
-  ).length;
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-  // Attention Needed: only job-related review categories, no OTPs/system emails
-  const attentionItems = classifiedApps
-    .filter(
-      (a) =>
-        a.derived.needs_human_review &&
-        REVIEW_CATEGORIES.includes(a.derived.category)
-    )
-    .slice(0, 4);
+const DATE_PRESETS = [
+  { label: "Today", value: "today" },
+  { label: "Yesterday", value: "yesterday" },
+  { label: "Last 7 Days", value: "last_7_days" },
+  { label: "Last 30 Days", value: "last_30_days" },
+  { label: "Custom Range", value: "custom" },
+] as const;
 
-  // Recent Emails List (latest 5)
-  const recentEmails = classifiedApps.slice(0, 5);
+const STAGE_PRESETS = [
+  { label: "All", value: "all" },
+  { label: "Awaiting Classification", value: "awaiting_classification" },
+  { label: "Classified Activity", value: "classified_activity" },
+] as const;
 
-  // Top Categories counts (derived)
-  const categoryCounts = classifiedApps.reduce((acc, curr) => {
-    acc[curr.derived.category] = (acc[curr.derived.category] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+function valueFrom(param: string | string[] | undefined): string | null {
+  if (Array.isArray(param)) return param[0] ?? null;
+  return param ?? null;
+}
 
-  const sortedCategories = Object.entries(categoryCounts)
-    .map(([cat, count]) => ({ category: cat, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 4);
+function buildUrl(
+  current: URLSearchParams,
+  updates: Record<string, string | null | undefined>,
+): string {
+  const next = new URLSearchParams(current.toString());
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === null || value === undefined || value === "") {
+      next.delete(key);
+      continue;
+    }
+    next.set(key, value);
+  }
+  const query = next.toString();
+  return query ? `/overview?${query}` : "/overview";
+}
 
-  // Mailbox Health status counts
-  const healthyCount = mockClients.filter((c) => c.mailboxStatus === "Active").length;
-  const issueCount = mockClients.filter((c) => c.mailboxStatus !== "Active").length;
+function formatDateTime(value: string | null): string {
+  if (!value) return "Not available yet";
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata",
+  }).format(new Date(value));
+}
 
-  const handleRefresh = () => {
-    setIsRefreshing(true);
-    setTimeout(() => {
-      setIsRefreshing(false);
-    }, 800);
-  };
+function formatDeadline(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeZone: "Asia/Kolkata",
+  }).format(parsed);
+}
+
+function toneForCategory(category: string | null): "offer" | "interview" | "assessment" | "review" | "neutral" {
+  if (category === "job_offer") return "offer";
+  if (category === "interview_invite") return "interview";
+  if (category === "assessment") return "assessment";
+  if (category === "review" || category === "unknown") return "review";
+  return "neutral";
+}
+
+function toneForQueue(queueStatus: string | null): "success" | "warning" | "critical" | "neutral" | "review" {
+  if (queueStatus === "review") return "review";
+  if (queueStatus === "dead_letter") return "critical";
+  if (queueStatus === "retry_scheduled") return "warning";
+  if (queueStatus === "pending") return "warning";
+  if (queueStatus === "processing") return "neutral";
+  return "success";
+}
+
+function toneForQueueState(value: string): "success" | "warning" | "critical" | "neutral" | "review" {
+  if (value === "Dead Letter") return "critical";
+  if (value === "Review Queue") return "review";
+  if (value === "Retrying" || value === "Pending") return "warning";
+  if (value === "Processing") return "neutral";
+  return "success";
+}
+
+export default async function OverviewPage({ searchParams }: { searchParams: SearchParams }) {
+  await requireDashboardSession();
+
+  const params = await searchParams;
+  const current = new URLSearchParams();
+  const range = valueFrom(params.range) ?? "today";
+  const stage = valueFrom(params.stage) ?? "all";
+  const deadline = valueFrom(params.deadline) ?? null;
+  const from = valueFrom(params.from);
+  const to = valueFrom(params.to);
+
+  for (const [key, value] of Object.entries({
+    range,
+    stage,
+    deadline,
+    from,
+    to,
+  })) {
+    if (value) current.set(key, value);
+  }
+
+  const data = await getOverviewWorkspaceData({
+    range,
+    stage,
+    deadlineTomorrowOnly: deadline === "tomorrow",
+    from,
+    to,
+  });
+
+  const latestIngest = formatDateTime(data.metrics.latestSuccessfulIngestAt);
+  const hasRows = data.clientRows.length > 0;
+  const hasActivity = data.activityRows.length > 0;
+  const interviewsParams = new URLSearchParams();
+  if (from) interviewsParams.set("from", from);
+  if (to) interviewsParams.set("to", to);
+  const interviewsHref = interviewsParams.toString()
+    ? `/operations/interviews?${interviewsParams.toString()}`
+    : "/operations/interviews";
 
   return (
-    <div className="overview-container">
-      {/* ── Filter & Control Bar ── */}
-      <section className="filter-bar-card">
-        <div className="filter-group">
-          <div className="select-wrapper">
-            <label htmlFor="ca-select">CA Profile</label>
-            <select
-              id="ca-select"
-              value={selectedCA}
-              onChange={(e) => setSelectedCA(e.target.value)}
-            >
-              <option value="all">All CAs</option>
-              {mockCAs.map((ca) => (
-                <option key={ca.id} value={ca.id}>
-                  {ca.name}
-                </option>
-              ))}
-            </select>
-          </div>
+    <main className="coo-page coo-overview-page">
+      <header className="coo-page__header">
+        <div>
+          <span className="coo-page__eyebrow">Operations Overview</span>
+          <h1 className="coo-page__title">Master COO Email Tracking</h1>
+          <p className="coo-page__subtitle">
+            Client-first live tracking before and after classification.
+          </p>
+        </div>
+        <div className="coo-page__meta">
+          <CooBadge label={`Latest ingest: ${latestIngest}`} tone={data.metrics.latestSuccessfulIngestAt ? "success" : "neutral"} />
+          <CooBadge label={data.dateRange.label} tone="neutral" />
+          <CooBadge label={data.stageFilter === "all" ? "All stages" : data.stageFilter.replace("_", " ")} tone="neutral" />
+          {data.deadlineTomorrowOnly ? <CooBadge label="Deadline tomorrow" tone="warning" /> : null}
+        </div>
+      </header>
 
-          <div className="select-wrapper">
-            <label htmlFor="status-select">Mailbox Status</label>
-            <select
-              id="status-select"
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
+      <section className="coo-toolbar" aria-label="Overview filters">
+        <div className="coo-toolbar__group" role="tablist" aria-label="Date ranges">
+          {DATE_PRESETS.map((preset) => (
+            <Link
+              key={preset.value}
+              href={buildUrl(current, { range: preset.value })}
+              className={`coo-filter-link ${range === preset.value ? "active" : ""}`}
             >
-              <option value="all">All Mailboxes</option>
-              <option value="healthy">Healthy Only</option>
-              <option value="issue">Needs Attention</option>
-            </select>
-          </div>
-
-          <div className="select-wrapper">
-            <label htmlFor="date-range-select">Date Range</label>
-            <select
-              id="date-range-select"
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
-            >
-              <option value="today">Today</option>
-              <option value="last_7_days">Last 7 Days</option>
-              <option value="last_30_days">Last 30 Days</option>
-              <option value="all_time">All Time</option>
-            </select>
-          </div>
+              {preset.label}
+            </Link>
+          ))}
         </div>
 
-        <div className="sync-info">
-          <span className="last-sync">
-            {isRefreshing ? "Refreshing feed..." : "Last synced: 2 mins ago"}
-          </span>
-          <button
-            className="btn btn-secondary btn-icon"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-            style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+        <div className="coo-toolbar__group" role="tablist" aria-label="Stage filters">
+          {STAGE_PRESETS.map((preset) => (
+            <Link
+              key={preset.value}
+              href={buildUrl(current, { stage: preset.value })}
+              className={`coo-filter-link ${stage === preset.value ? "active" : ""}`}
+            >
+              {preset.label}
+            </Link>
+          ))}
+        </div>
+
+        <div className="coo-toolbar__group">
+          <Link
+            href={buildUrl(current, {
+              deadline: deadline === "tomorrow" ? null : "tomorrow",
+            })}
+            className={`coo-filter-link ${deadline === "tomorrow" ? "active" : ""}`}
           >
-            <IconRefresh size={16} className={isRefreshing ? "spin-animation" : ""} />
-            Refresh Feed
-          </button>
+            Deadline Tomorrow
+          </Link>
         </div>
+
+        <form className="coo-date-form" action="/overview" method="get">
+          <input type="hidden" name="stage" value={stage} />
+          <input type="hidden" name="deadline" value={deadline ?? ""} />
+          <label>
+            <span>From</span>
+            <input type="date" name="from" defaultValue={from ?? ""} />
+          </label>
+          <label>
+            <span>To</span>
+            <input type="date" name="to" defaultValue={to ?? ""} />
+          </label>
+          <button type="submit" className="coo-action-button">
+            Apply
+          </button>
+        </form>
       </section>
 
-      {/* ── Metric Grid ── */}
-      <section className="metrics-grid">
-        <Link href="/applications" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconMail size={16} />
-            </span>
-            <span className="metric-title">Total Emails</span>
-          </div>
-          <div className="metric-value">{totalEmails}</div>
-          <div className="metric-trend text-muted">All synced headers</div>
-        </Link>
+      <SectionBlock
+        title="Today"
+        subtitle="Counts are based on received_at, with classified throughput shown separately."
+      >
+        <div className="coo-metric-grid">
+          <MetricCard label="Total Emails" value={data.metrics.totalEmails} hint="Selected business window" tone="neutral" />
+          <MetricCard label="New Emails" value={data.metrics.newEmails} hint="Based on when the email entered the system" tone="neutral" />
+          <MetricCard label="Pending Classification" value={data.metrics.pendingClassification} hint="Awaiting work" tone="warning" />
+          <MetricCard label="Classified" value={data.metrics.classifiedToday} hint="Based on when classification finished" tone="success" />
+          <MetricCard label="Review Queue" value={data.metrics.review} hint="Needs human review" tone="review" />
+          <MetricCard label="Applications" value={data.metrics.applications} hint="application_received" tone="neutral" />
+          <MetricCard
+            label="Interviews"
+            value={data.metrics.interviews}
+            hint="Highest-signal follow up"
+            tone="interview"
+            href={interviewsHref}
+          />
+          <MetricCard label="Assessments" value={data.metrics.assessments} hint="Timed evaluation requests" tone="assessment" />
+          <MetricCard label="Offers" value={data.metrics.offers} hint="Highest-priority activity" tone="offer" />
+          <MetricCard label="Rejections" value={data.metrics.rejections} hint="Closed opportunities" tone="neutral" />
+          <MetricCard label="Recruiter Replies" value={data.metrics.recruiterReplies} hint="Response handling" tone="neutral" />
+          <MetricCard label="Follow-up Needed" value={data.metrics.followUpNeeded} hint="Needs action" tone="review" />
+        </div>
+      </SectionBlock>
 
-        <Link href="/applications?category=application_received" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconApplications size={16} />
-            </span>
-            <span className="metric-title">Applications</span>
-          </div>
-          <div className="metric-value">{totalAppsCount}</div>
-          <div className="metric-trend text-success">Active submissions</div>
-        </Link>
-
-        <Link href="/applications?category=interview_invite" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconClients size={16} />
-            </span>
-            <span className="metric-title">Interviews</span>
-          </div>
-          <div className="metric-value">{interviewsCount}</div>
-          <div className="metric-trend text-success">Invites received</div>
-        </Link>
-
-        <Link href="/applications?category=assessment" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconAssessment size={16} />
-            </span>
-            <span className="metric-title">Assessments</span>
-          </div>
-          <div className="metric-value">{assessmentsCount}</div>
-          <div className="metric-trend text-pending">Deadlines pending</div>
-        </Link>
-
-        <Link href="/applications?category=rejection" className="metric-card">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconRejection size={16} />
-            </span>
-            <span className="metric-title">Rejections</span>
-          </div>
-          <div className="metric-value">{rejectionsCount}</div>
-          <div className="metric-trend text-muted">Closed listings</div>
-        </Link>
-
-        <Link href="/review-queue" className="metric-card highlight-urgent">
-          <div className="metric-meta">
-            <span className="metric-icon">
-              <IconWarning size={16} />
-            </span>
-            <span className="metric-title">Review Required</span>
-          </div>
-          <div className="metric-value text-urgent">{reviewRequiredCount}</div>
-          <div className="metric-trend text-urgent font-bold">Needs CA action</div>
-        </Link>
-      </section>
-
-      {/* ── Main Panel Grid ── */}
-      <div className="overview-main-grid">
-        {/* Left Side: Attention Needed & Recent Activity */}
-        <div className="main-left-column">
-          {/* Attention Needed */}
-          <div className="content-card">
-            <div className="card-header">
-              <h2>⚠️ Action Required Queue</h2>
-              <Link href="/review-queue" className="header-link">
-                View Review Queue →
-              </Link>
-            </div>
-            <div className="attention-list">
-              {attentionItems.map((item) => (
-                <div key={item.id} className="attention-item">
-                  <div className="attention-meta">
-                    <span className={`badge badge-${item.derived.category}`}>
-                      {item.derived.category.replace("_", " ")}
-                    </span>
-                    <span className="attention-client">{item.clientName}</span>
-                  </div>
-                  <h4 className="attention-subject">{item.subject}</h4>
-                  {item.derived.deadline && (
-                    <div className="attention-deadline">
-                      <span>Due: </span>
-                      <strong className="text-urgent">{item.derived.deadline}</strong>
-                    </div>
-                  )}
-                  <div className="attention-action">
-                    <span>Task: </span>
-                    {item.actionRequired}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Recent Email Activity */}
-          <div className="content-card">
-            <div className="card-header">
-              <h2>Recent Email Logs</h2>
-              <Link href="/applications" className="header-link">
-                View All Emails →
-              </Link>
-            </div>
-            <div className="table-wrapper">
-              <table className="ops-table">
+      <SectionBlock
+        title="Master Client Tracking"
+        subtitle="One row per client mailbox. The tracker mailbox is hidden from the client identity surface."
+      >
+        {!hasRows ? (
+          <EmptyState
+            title="No clients match the selected filters."
+            description="Try a wider date range or switch the stage filter to All."
+          />
+        ) : (
+          <>
+            <div className="coo-table-card">
+              <table className="coo-table coo-table--overview">
                 <thead>
                   <tr>
-                    <th>Client</th>
-                    <th>Subject</th>
-                    <th>Folder</th>
-                    <th>Category</th>
-                    <th>Confidence</th>
+                    <th>Client Identity</th>
+                    <th>Total Emails</th>
+                    <th>New Emails</th>
+                    <th>Applications</th>
+                    <th>Interviews</th>
+                    <th>Assessments</th>
+                    <th>Offers</th>
+                    <th>Rejections</th>
+                    <th>Recruiter Replies</th>
+                    <th>Follow-up Needed</th>
+                    <th>Last Meaningful Update</th>
+                    <th>Queue Status</th>
+                    <th>Urgency</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {recentEmails.map((email) => (
-                    <tr key={email.id} className="table-row-hover">
-                      <td>
-                        <div className="client-name-lbl">{email.clientName}</div>
-                        <div className="client-mailbox-lbl">{email.mailbox}</div>
+                  {data.clientRows.map((row) => (
+                    <tr key={row.clientKey}>
+                      <td className="coo-client-cell">
+                        <Link href={`/clients/${row.clientKey}`} className="coo-client-link">
+                          {row.originalRecipient}
+                        </Link>
+                        <span className="coo-client-note">Client name available after Leads mapping</span>
                       </td>
-                      <td className="cell-subject">{email.subject}</td>
-                      <td>{email.folderName}</td>
-                      <td>
-                        <span className={`badge badge-${email.derived.category}`}>
-                          {email.derived.category.replace("_", " ")}
-                        </span>
+                      <td>{row.totalEmails}</td>
+                      <td>{row.newEmails}</td>
+                      <td>{row.applications}</td>
+                      <td>{row.interviews}</td>
+                      <td>{row.assessments}</td>
+                      <td className="coo-highlight">{row.offers}</td>
+                      <td>{row.rejections}</td>
+                      <td>{row.recruiterReplies}</td>
+                      <td>{row.followUpNeeded}</td>
+                      <td className="coo-update-cell">
+                        <span>{row.latestUpdateLabel}</span>
+                        {row.latestMeaningfulDeadline ? (
+                          <span className="coo-update-note">Deadline: {formatDeadline(row.latestMeaningfulDeadline)}</span>
+                        ) : null}
                       </td>
-                      <td className="font-tabular">{(email.derived.confidence * 100).toFixed(0)}%</td>
+                      <td>
+                        <CooBadge label={row.queueState} tone={toneForQueueState(row.queueState)} />
+                      </td>
+                      <td>
+                        <CooBadge label={row.urgency} tone={row.urgency === "offer" ? "offer" : row.urgency === "interview" ? "interview" : row.urgency === "assessment" ? "assessment" : row.urgency === "review required" ? "review" : "neutral"} />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
 
-            {/* Mobile-Only Client Cards (Transform table for mobile) */}
-            <div className="mobile-only-cards">
-              {recentEmails.map((email) => (
-                <div key={email.id} className="mobile-client-card">
-                  <div className="mobile-card-header">
+            <div className="coo-mobile-grid">
+              {data.clientRows.map((row) => (
+                <Link key={row.clientKey} href={`/clients/${row.clientKey}`} className="coo-mobile-card">
+                  <div className="coo-mobile-card__top">
                     <div>
-                      <div className="m-client-name">{email.clientName}</div>
-                      <div className="m-client-mailbox">{email.mailbox}</div>
+                      <div className="coo-mobile-card__title">{row.originalRecipient}</div>
+                      <div className="coo-mobile-card__subtitle">{row.latestUpdateLabel}</div>
                     </div>
-                    <span className={`badge badge-${email.derived.category}`}>
-                      {email.derived.category.replace("_", " ")}
-                    </span>
+                    <div className="coo-chip-stack">
+                      <CooBadge label={row.queueState} tone={row.queueState === "Dead Letter" ? "critical" : row.queueState === "Review Queue" ? "review" : "neutral"} />
+                      <CooBadge label={row.urgency} tone={row.urgency === "offer" ? "offer" : row.urgency === "interview" ? "interview" : row.urgency === "assessment" ? "assessment" : row.urgency === "review required" ? "review" : "neutral"} />
+                    </div>
                   </div>
-                  <div className="m-card-subject">{email.subject}</div>
-                  <div className="m-card-meta">
-                    <span>Folder: <strong>{email.folderName}</strong></span>
-                    <span>Confidence: <strong>{(email.derived.confidence * 100).toFixed(0)}%</strong></span>
+                  <div className="coo-mobile-card__stats">
+                    <span>Total {row.totalEmails}</span>
+                    <span>New {row.newEmails}</span>
+                    <span>Interviews {row.interviews}</span>
+                    <span>Offers {row.offers}</span>
                   </div>
-                </div>
+                </Link>
               ))}
             </div>
-          </div>
-        </div>
+          </>
+        )}
+      </SectionBlock>
 
-        {/* Right Side: Charts & Quick Actions */}
-        <div className="main-right-column">
-          {/* Chart: Activity */}
-          <div className="content-card">
-            <h3>Email Volumes (Last 7 Days)</h3>
-            <div className="bar-chart-container">
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "65%" }}>
-                  <span className="bar-val">12</span>
-                </div>
-                <span className="bar-lbl">Wed</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "80%" }}>
-                  <span className="bar-val">15</span>
-                </div>
-                <span className="bar-lbl">Thu</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "45%" }}>
-                  <span className="bar-val">8</span>
-                </div>
-                <span className="bar-lbl">Fri</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "20%" }}>
-                  <span className="bar-val">3</span>
-                </div>
-                <span className="bar-lbl">Sat</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "15%" }}>
-                  <span className="bar-val">2</span>
-                </div>
-                <span className="bar-lbl">Sun</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "90%" }}>
-                  <span className="bar-val">18</span>
-                </div>
-                <span className="bar-lbl">Mon</span>
-              </div>
-              <div className="chart-bar-y">
-                <div className="chart-bar" style={{ height: "75%" }}>
-                  <span className="bar-val">14</span>
-                </div>
-                <span className="bar-lbl">Tue</span>
-              </div>
-            </div>
+      <div className="coo-dual-grid">
+        <SectionBlock
+          title="System Health"
+          subtitle="Queue state and ingestion freshness for the tracker pipeline."
+          action={<Link href="/dashboard" className="coo-inline-link">Open technical dashboard</Link>}
+        >
+          <div className="coo-system-grid">
+            <MetricCard label="Pending" value={data.metrics.pending} hint="Awaiting classification" tone="warning" />
+            <MetricCard label="Processing" value={data.metrics.processing} hint="Claims in flight" tone="neutral" />
+            <MetricCard label="Retry Scheduled" value={data.metrics.retryScheduled} hint="Waiting for next attempt" tone="warning" />
+            <MetricCard label="Review" value={data.metrics.review} hint="Human review required" tone="review" />
+            <MetricCard label="Dead Letter" value={data.metrics.deadLetter} hint="Failed safely" tone="critical" />
+            <MetricCard label="Oldest Backlog Age" value={data.metrics.oldestBacklogAgeMinutes === null ? "—" : `${data.metrics.oldestBacklogAgeMinutes}m`} hint="Based on when the email entered the system" tone="warning" />
+            <MetricCard label="Latest Successful Ingest" value={latestIngest} hint="From the tracker mailbox" tone={data.metrics.latestSuccessfulIngestAt ? "success" : "neutral"} />
+            <MetricCard label="Current Processing" value={data.metrics.currentProcessingCount} hint="Emails currently being processed" tone="neutral" />
           </div>
+        </SectionBlock>
 
-          {/* Mailbox Connection Health */}
-          <div className="content-card">
-            <h3>Mailbox Connection Status</h3>
-            <div className="health-distribution">
-              <div className="health-status-row">
-                <div className="status-indicator-green" />
-                <span className="status-label">Active & Healthy</span>
-                <span className="status-count font-tabular">{healthyCount}</span>
-              </div>
-              <div className="health-status-row">
-                <div className="status-indicator-orange" />
-                <span className="status-label">Needs Reconnection</span>
-                <span className="status-count font-tabular">{issueCount}</span>
-              </div>
+        <SectionBlock
+          title="Important Activity"
+          subtitle="High-signal events only. No private message content is shown."
+        >
+          {!hasActivity ? (
+            <EmptyState
+              title="No high-priority activity yet."
+              description="Offer, interview, assessment, recruiter reply, follow-up, and review items will appear here."
+            />
+          ) : (
+            <div className="coo-activity-list">
+              {data.activityRows.map((item) => {
+                const deadline = formatDeadline(item.deadline);
+                return (
+                  <article key={item.id} className="coo-activity-card">
+                    <div className="coo-activity-card__top">
+                      <div className="coo-chip-row">
+                        <CooBadge label={item.category ?? "review"} tone={toneForCategory(item.category)} />
+                        <CooBadge label={item.queueStatusLabel} tone={toneForQueue(item.classificationStatus)} />
+                        <CooBadge label={item.priority} tone={item.priority === "offer" ? "offer" : item.priority === "review" ? "review" : "neutral"} />
+                      </div>
+                      <time className="coo-activity-time" dateTime={item.receivedAt}>
+                        {formatDateTime(item.receivedAt)}
+                      </time>
+                    </div>
+                    <div className="coo-activity-recipient">{item.originalRecipient ?? "Client mailbox not identified"}</div>
+                    <div className="coo-activity-meta">
+                      {deadline ? <span>Deadline: {deadline}</span> : null}
+                      {item.actionRequired ? <span>Action: {item.actionRequired}</span> : null}
+                    </div>
+                    {item.classificationStatus === "review" ? (
+                      <div className="coo-review-note">
+                        <CooBadge label="Review" tone="review" />
+                        <p>{item.safeReason ?? "Classification reason redacted for safety."}</p>
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
             </div>
-            <div className="health-progress-bar">
-              <div
-                className="progress-fill"
-                style={{ width: `${(healthyCount / (healthyCount + issueCount)) * 100}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Top Categories */}
-          <div className="content-card">
-            <h3>Top Email Categories</h3>
-            <div className="category-list">
-              {sortedCategories.map(({ category, count }) => (
-                <div key={category} className="category-row">
-                  <span className="category-name">{category.replace("_", " ")}</span>
-                  <div className="category-bar-wrapper">
-                    <div
-                      className="category-bar"
-                      style={{ width: `${(count / totalEmails) * 100}%` }}
-                    />
-                  </div>
-                  <span className="category-count font-tabular">{count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Quick Actions Panel */}
-          <div className="content-card">
-            <h3>Quick Operations Actions</h3>
-            <div className="quick-actions-grid">
-              <Link href="/applications" className="action-btn-link">
-                📁 Browse Applications
-              </Link>
-              <Link href="/review-queue" className="action-btn-link">
-                📥 Review Queue
-              </Link>
-              <Link href="/clients" className="action-btn-link">
-                👥 Clients & Mailboxes
-              </Link>
-              <Link href="/mailboxes" className="action-btn-link">
-                🔌 Connection Status
-              </Link>
-            </div>
-          </div>
-        </div>
+          )}
+        </SectionBlock>
       </div>
 
-      <style jsx>{`
-        .overview-container {
-          display: flex;
-          flex-direction: column;
-          gap: 24px;
-        }
-
-        /* ── Filter Bar Card ── */
-        .filter-bar-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 16px 24px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          flex-wrap: wrap;
-          gap: 16px;
-          box-shadow: var(--card-shadow);
-        }
-
-        .filter-group {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          flex-wrap: wrap;
-        }
-
-        .select-wrapper {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .select-wrapper label {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-          font-weight: 600;
-          text-transform: uppercase;
-        }
-
-        .select-wrapper select {
-          padding: 8px 12px;
-          border-radius: 6px;
-          border: 1px solid var(--border-gray);
-          background-color: var(--white);
-          color: var(--text-dark);
-          font-size: 0.875rem;
-          font-weight: 500;
-          outline: none;
-          min-width: 160px;
-        }
-
-        .sync-info {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-        }
-
-        .last-sync {
-          font-size: 0.8125rem;
-          color: var(--text-muted);
-        }
-
-        .btn {
-          padding: 8px 16px;
-          font-size: 0.875rem;
-          font-weight: 600;
-          border-radius: 9999px;
-          border: none;
-          cursor: pointer;
-          transition: background-color 0.2s;
-        }
-
-        .btn-secondary {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          color: var(--text-dark);
-        }
-
-        .btn-secondary:hover {
-          background-color: var(--workspace-bg);
-        }
-
-        /* ── Metrics Grid ── */
-        .metrics-grid {
-          display: grid;
-          grid-template-columns: repeat(6, 1fr);
-          gap: 16px;
-        }
-
-        .metric-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 20px;
-          text-decoration: none;
-          color: inherit;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
-          box-shadow: var(--card-shadow);
-        }
-
-        .metric-card:hover {
-          box-shadow: var(--card-shadow-hover);
-          border-color: var(--primary-blue);
-          transform: translateY(-2px);
-        }
-
-        .metric-card.highlight-urgent {
-          border-left: 4px solid var(--urgent-red);
-        }
-
-        .metric-meta {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .metric-icon {
-          font-size: 1.25rem;
-        }
-
-        .metric-title {
-          font-size: 0.8125rem;
-          font-weight: 600;
-          color: var(--text-muted);
-        }
-
-        .metric-value {
-          font-size: 2rem;
-          font-weight: 700;
-          font-family: var(--font-display);
-        }
-
-        .metric-trend {
-          font-size: 0.75rem;
-        }
-
-        .text-success { color: var(--success-green); }
-        .text-pending { color: var(--pending-orange); }
-        .text-urgent { color: var(--urgent-red); }
-        .font-bold { font-weight: 700; }
-        .font-tabular { font-feature-settings: "tnum"; }
-
-        /* ── Main Content Grid ── */
-        .overview-main-grid {
-          display: grid;
-          grid-template-columns: 2fr 1fr;
-          gap: 24px;
-        }
-
-        .main-left-column,
-        .main-right-column {
-          display: flex;
-          flex-direction: column;
-          gap: 24px;
-          min-width: 0;
-        }
-
-        .content-card {
-          background-color: var(--white);
-          border: 1px solid var(--border-gray);
-          border-radius: 12px;
-          padding: 24px;
-          box-shadow: var(--card-shadow);
-        }
-
-        .card-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 20px;
-        }
-
-        .card-header h2 {
-          font-size: 1.125rem;
-          font-weight: 700;
-        }
-
-        .header-link {
-          font-size: 0.8125rem;
-          color: var(--primary-blue);
-          text-decoration: none;
-          font-weight: 600;
-        }
-
-        .header-link:hover {
-          text-decoration: underline;
-        }
-
-        /* ── Attention List ── */
-        .attention-list {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-
-        .attention-item {
-          padding: 16px;
-          border: 1px solid var(--border-gray);
-          border-radius: 8px;
-          background-color: var(--workspace-bg);
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-
-        .attention-meta {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-
-        .attention-client {
-          font-size: 0.8125rem;
-          font-weight: 600;
-          color: var(--text-muted);
-        }
-
-        .attention-subject {
-          font-size: 0.9375rem;
-          font-weight: 600;
-          color: var(--text-dark);
-        }
-
-        .attention-deadline {
-          font-size: 0.8125rem;
-        }
-
-        .attention-action {
-          font-size: 0.8125rem;
-          color: var(--text-muted);
-          border-top: 1px solid var(--border-gray);
-          padding-top: 6px;
-          margin-top: 4px;
-        }
-
-        /* ── Reusable Status Badges ── */
-        .badge {
-          display: inline-flex;
-          padding: 2px 8px;
-          border-radius: 4px;
-          font-size: 0.6875rem;
-          font-weight: 700;
-          text-transform: uppercase;
-        }
-
-        .badge-interview_invite {
-          background-color: var(--pending-orange-bg);
-          color: var(--pending-orange);
-        }
-
-        .badge-assessment {
-          background-color: var(--urgent-red-bg);
-          color: var(--urgent-red);
-        }
-
-        .badge-recruiter_reply,
-        .badge-follow_up_needed {
-          background-color: var(--pending-orange-bg);
-          color: var(--pending-orange);
-        }
-
-        .badge-application_received {
-          background-color: #e2e8f0;
-          color: var(--text-muted);
-        }
-
-        .badge-rejection {
-          background-color: #fee2e2;
-          color: #ef4444;
-        }
-
-        .badge-job_offer {
-          background-color: var(--success-green-bg);
-          color: var(--success-green);
-        }
-
-        .badge-email_verification,
-        .badge-otp_verification {
-          background-color: #dbeafe;
-          color: var(--primary-blue);
-        }
-
-        /* ── Operations Table ── */
-        .table-wrapper {
-          width: 100%;
-          overflow-x: auto;
-        }
-
-        .ops-table {
-          width: 100%;
-          border-collapse: collapse;
-          text-align: left;
-          font-size: 0.875rem;
-        }
-
-        .ops-table th {
-          padding: 12px 16px;
-          color: var(--text-muted);
-          font-weight: 600;
-          border-bottom: 1px solid var(--border-gray);
-        }
-
-        .ops-table td {
-          padding: 16px;
-          border-bottom: 1px solid var(--border-gray);
-        }
-
-        .table-row-hover:hover {
-          background-color: var(--workspace-bg);
-        }
-
-        .client-name-lbl {
-          font-weight: 600;
-          color: var(--text-dark);
-        }
-
-        .client-mailbox-lbl {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-          margin-top: 2px;
-        }
-
-        .cell-subject {
-          max-width: 260px;
-          white-space: nowrap;
-          text-overflow: ellipsis;
-          overflow: hidden;
-          font-weight: 500;
-        }
-
-        /* ── Bar Chart Styling (CSS-only) ── */
-        .bar-chart-container {
-          display: flex;
-          align-items: flex-end;
-          justify-content: space-between;
-          height: 160px;
-          padding-top: 20px;
-          margin-top: 16px;
-        }
-
-        .chart-bar-y {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 8px;
-          height: 100%;
-          justify-content: flex-end;
-        }
-
-        .chart-bar {
-          background-color: var(--primary-blue);
-          border-radius: 4px 4px 0 0;
-          width: 24px;
-          position: relative;
-          display: flex;
-          justify-content: center;
-          transition: height 0.5s ease;
-        }
-
-        .bar-val {
-          position: absolute;
-          top: -20px;
-          font-size: 0.6875rem;
-          font-weight: 700;
-          color: var(--text-muted);
-        }
-
-        .bar-lbl {
-          font-size: 0.75rem;
-          color: var(--text-muted);
-        }
-
-        /* ── Mailbox Health Status ── */
-        .health-distribution {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          margin: 16px 0;
-        }
-
-        .health-status-row {
-          display: flex;
-          align-items: center;
-          font-size: 0.875rem;
-        }
-
-        .status-indicator-green {
-          width: 8px;
-          height: 8px;
-          background-color: var(--success-green);
-          border-radius: 50%;
-          margin-right: 10px;
-        }
-
-        .status-indicator-orange {
-          width: 8px;
-          height: 8px;
-          background-color: var(--pending-orange);
-          border-radius: 50%;
-          margin-right: 10px;
-        }
-
-        .status-label {
-          color: var(--text-dark);
-          flex: 1;
-        }
-
-        .status-count {
-          font-weight: 600;
-          color: var(--text-muted);
-        }
-
-        .health-progress-bar {
-          height: 8px;
-          background-color: var(--border-gray);
-          border-radius: 4px;
-          overflow: hidden;
-        }
-
-        .progress-fill {
-          height: 100%;
-          background-color: var(--success-green);
-          border-radius: 4px;
-        }
-
-        /* ── Top Categories List ── */
-        .category-list {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          margin-top: 16px;
-        }
-
-        .category-row {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          font-size: 0.8125rem;
-        }
-
-        .category-name {
-          width: 110px;
-          font-weight: 600;
-          color: var(--text-dark);
-          text-transform: capitalize;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .category-bar-wrapper {
-          flex: 1;
-          height: 6px;
-          background-color: var(--border-gray);
-          border-radius: 3px;
-        }
-
-        .category-bar {
-          height: 100%;
-          background-color: var(--primary-blue);
-          border-radius: 3px;
-        }
-
-        .category-count {
-          font-weight: 600;
-          color: var(--text-muted);
-          width: 20px;
-          text-align: right;
-        }
-
-        /* ── Quick Actions Grid ── */
-        .quick-actions-grid {
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 10px;
-          margin-top: 16px;
-        }
-
-        .action-btn-link {
-          background-color: var(--workspace-bg);
-          border: 1px solid var(--border-gray);
-          border-radius: 8px;
-          padding: 12px;
-          text-decoration: none;
-          color: var(--text-dark);
-          font-size: 0.8125rem;
-          font-weight: 600;
-          text-align: center;
-          transition: background-color 0.2s, border-color 0.2s;
-        }
-
-        .action-btn-link:hover {
-          background-color: var(--white);
-          border-color: var(--primary-blue);
-        }
-
-        .mobile-only-cards {
-          display: none;
-        }
-
-        /* ── Responsive Modifications ── */
-
-        /* Laptop (1024px - 1439px) */
-        @media (max-width: 1439px) {
-          .metrics-grid {
-            grid-template-columns: repeat(3, 1fr);
-          }
-        }
-
-        /* Tablet (768px - 1023px) */
-        @media (max-width: 1023px) {
-          .overview-main-grid {
-            grid-template-columns: 1fr; /* Stack columns */
-          }
-        }
-
-        /* Mobile (Below 768px) */
-        @media (max-width: 767px) {
-          .metrics-grid {
-            grid-template-columns: repeat(2, 1fr);
-          }
-
-          .metric-card {
-            padding: 14px;
-          }
-
-          .metric-value {
-            font-size: 1.5rem;
-          }
-
-          .ops-table {
-            display: none; /* Hide squeezed table on mobile */
-          }
-
-          /* Show Mobile Client Cards instead of table */
-          .mobile-only-cards {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            margin-top: 16px;
-          }
-
-          .mobile-client-card {
-            background-color: var(--white);
-            border: 1px solid var(--border-gray);
-            border-radius: 8px;
-            padding: 16px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-          }
-
-          .mobile-card-header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-          }
-
-          .mobile-card-header > div:first-child {
-            min-width: 0;
-            flex: 1;
-          }
-
-          .m-client-name {
-            font-weight: 700;
-            font-size: 0.875rem;
-            color: var(--text-dark);
-          }
-
-          .m-client-mailbox {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            word-break: break-all;
-            overflow-wrap: break-word;
-          }
-
-          .m-card-subject {
-            font-size: 0.8125rem;
-            font-weight: 600;
-            color: var(--text-dark);
-            line-height: 1.4;
-          }
-
-          .m-card-meta {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            border-top: 1px solid var(--border-gray);
-            padding-top: 8px;
-          }
-
-          .quick-actions-grid {
-            grid-template-columns: 1fr; /* Full width actions */
-          }
-
-          .filter-bar-card {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 16px;
-            padding: 16px;
-          }
-
-          .filter-group {
-            flex-direction: column;
-            align-items: stretch;
-            gap: 12px;
-          }
-
-          .select-wrapper select {
-            width: 100%;
-          }
-
-          .sync-info {
-            width: 100%;
-            justify-content: space-between;
-            border-top: 1px solid var(--border-gray);
-            padding-top: 12px;
-          }
-        }
-      `}</style>
-    </div>
+      <SectionBlock
+        title="Two-stage Processing Flow"
+        subtitle="A concise COO-facing summary of how the tracker works."
+      >
+        <div className="coo-flow">
+          {[
+            "Incoming Email",
+            "Tracker Inbox",
+            "Awaiting Classification",
+            "Rules / AI Classification",
+            "Client Activity View",
+            "Review Queue when required",
+          ].map((step, index) => (
+            <div key={step} className="coo-flow__step">
+              <span className="coo-flow__index">{index + 1}</span>
+              <span>{step}</span>
+            </div>
+          ))}
+        </div>
+      </SectionBlock>
+
+    </main>
   );
 }
