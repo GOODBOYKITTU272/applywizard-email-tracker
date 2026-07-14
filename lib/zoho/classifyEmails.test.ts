@@ -533,30 +533,26 @@ describe("Phase 3D dry-run and mailbox guardrails (decision logic)", () => {
     });
   });
 
-  describe("Phase 4A safety: no mock client_id written in live path", () => {
-    it("classifyEmails.ts does not import or call mapRecipientToClient — mock data cannot reach DB", () => {
-      // Structural guard: if mapRecipientToClient is re-imported and called, it will write
-      // mock IDs from lib/mockData into production Supabase rows. This test fails the
-      // moment that import or call is re-added, forcing a deliberate decision.
+  describe("Live Monitor V1: DB-backed client mapping in live path", () => {
+    it("classifyEmails.ts wires the DB-backed mapRecipientToClient and uses no mock data", () => {
+      // Step 2 wiring: the live classify path resolves client_id from the real
+      // `clients` table via mapRecipientToClient — and must never reach mock data.
       const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
 
-      // No import of mapRecipientToClient (import line would be: `import { mapRecipientToClient }`)
-      expect(src).not.toMatch(/import\s*\{[^}]*mapRecipientToClient[^}]*\}/);
-      // No function call (call would be: `mapRecipientToClient(`)
-      expect(src).not.toContain("mapRecipientToClient(");
-      // No mock data imports
+      expect(src).toMatch(/import\s*\{[^}]*mapRecipientToClient[^}]*\}/);
+      expect(src).toContain("mapRecipientToClient(");
+      // Mock client data must not be reachable from the live ingestion path.
       expect(src).not.toContain("mockClients");
       expect(src).not.toContain("mockData");
     });
 
-    it("live path Supabase update payload hardcodes client_id: null", () => {
-      // Verify the literal null is in the source — not computed from a mapping call.
+    it("live path sets client_id from the recipient mapping, not a hardcoded null", () => {
       const src: string = readFileSync(resolve(__dirname, "classifyEmails.ts"), "utf8");
 
-      // The update payload must contain `client_id: null` as a literal
-      expect(src).toMatch(/client_id:\s*null/);
-      // And must NOT contain client_id assigned from a variable (mappingResult, etc.)
-      expect(src).not.toMatch(/client_id:\s*mapping/);
+      // The update payload must assign client_id from the mapping result variable.
+      expect(src).toMatch(/client_id:\s*mappedClientId/);
+      // The old always-null literal must be gone from the payload.
+      expect(src).not.toMatch(/client_id:\s*null,/);
     });
 
     it("ZOHO_CLASSIFY_MAX_PER_RUN configures the pending query limit", () => {

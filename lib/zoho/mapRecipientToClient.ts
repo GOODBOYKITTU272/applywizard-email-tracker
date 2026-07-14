@@ -1,52 +1,73 @@
 /**
- * mapRecipientToClient — maps an extracted original recipient to a known client.
+ * mapRecipientToClient — maps an extracted original recipient to an active client
+ * in the Supabase `clients` table (Live Monitor V1).
  *
- * BLOCKER: No real `clients` table exists in Supabase yet. This module matches
- * against mockClients from lib/mockData.ts. Replace with a Supabase query
- * once a real clients table is migrated.
- *
- * Matching is exact (normalized to lowercase). Name matching is not used.
+ * DB-backed exact match on `recipient_email_normalized` (lower+trim), active
+ * clients only. Never throws: any DB error is treated as unmatched so a mapping
+ * failure can never block classification of an email.
  */
 
-import { mockClients } from "@/lib/mockData";
+const ADMIN_MAILBOX = (process.env.ZOHO_ADMIN_EMAIL ?? "ramakrishna@applywizard.ai").trim().toLowerCase();
 
-const ADMIN_MAILBOX = (
-  process.env.ZOHO_ADMIN_EMAIL ?? "ramakrishna@applywizard.ai"
-).toLowerCase();
+export type RecipientMappingStatus = "matched" | "unmatched" | "internal" | "admin";
 
-export type ClientMappingStatus = "matched" | "unmatched" | "internal" | "admin";
+export type RecipientMappingResult =
+  | { status: "matched"; normalizedRecipient: string; clientId: string }
+  | { status: "unmatched"; normalizedRecipient: string | null; clientId: null }
+  | { status: "internal"; normalizedRecipient: string; clientId: null }
+  | { status: "admin"; normalizedRecipient: string; clientId: null };
 
-export interface ClientMappingResult {
-  /** mock client ID string; null when unmatched/internal/admin. */
-  clientId: string | null;
-  status: ClientMappingStatus;
+export interface ClientLookupSupabase {
+  from(table: string): {
+    select(columns: string): {
+      eq(column: string, value: string | boolean): {
+        eq(column: string, value: string | boolean): {
+          maybeSingle(): Promise<{ data: { id: string } | null; error: { message: string } | null }>;
+        };
+      };
+    };
+  };
 }
 
-export function mapRecipientToClient(
+function normalize(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export async function mapRecipientToClient(
+  supabase: ClientLookupSupabase,
   originalRecipient: string | null,
   routingStatus: string,
-): ClientMappingResult {
+): Promise<RecipientMappingResult> {
+  // Internal routing is decided upstream by the recipient extractor; honor it first.
   if (routingStatus === "internal") {
-    return { clientId: null, status: "internal" };
+    return { status: "internal", normalizedRecipient: originalRecipient ? normalize(originalRecipient) : "", clientId: null };
   }
 
-  if (!originalRecipient) {
-    return { clientId: null, status: "unmatched" };
+  if (!originalRecipient || !originalRecipient.trim()) {
+    return { status: "unmatched", normalizedRecipient: null, clientId: null };
   }
 
-  const normalized = originalRecipient.toLowerCase().trim();
+  const normalized = normalize(originalRecipient);
 
   if (normalized === ADMIN_MAILBOX) {
-    return { clientId: null, status: "admin" };
+    return { status: "admin", normalizedRecipient: normalized, clientId: null };
   }
 
-  const match = mockClients.find(
-    (c) => c.mailbox.toLowerCase() === normalized,
-  );
+  try {
+    const { data, error } = await supabase
+      .from("clients")
+      .select("id")
+      .eq("recipient_email_normalized", normalized)
+      .eq("is_active", true)
+      .maybeSingle();
 
-  if (match) {
-    return { clientId: match.id, status: "matched" };
+    if (error || !data?.id) {
+      return { status: "unmatched", normalizedRecipient: normalized, clientId: null };
+    }
+
+    return { status: "matched", normalizedRecipient: normalized, clientId: String(data.id) };
+  } catch {
+    // Never block classification because the lookup failed.
+    return { status: "unmatched", normalizedRecipient: normalized, clientId: null };
   }
-
-  return { clientId: null, status: "unmatched" };
 }
