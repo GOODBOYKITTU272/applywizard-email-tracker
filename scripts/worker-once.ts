@@ -1,17 +1,17 @@
 import Module from "module";
 import { join } from "path";
 
-type Mode = "sync" | "classify" | "recovery";
+type Mode = "sync" | "classify" | "recovery" | "sync-clients";
 
 const mode = process.argv[2] as Mode | undefined;
 
 if (!mode) {
-  console.log("Usage: npm run worker:once -- <sync|classify|recovery>");
+  console.log("Usage: npm run worker:once -- <sync|classify|recovery|sync-clients> [--confirm-production]");
   process.exit(0);
 }
 
-if (!["sync", "classify", "recovery"].includes(mode)) {
-  console.error("Invalid worker mode. Use one of: sync, classify, recovery.");
+if (!["sync", "classify", "recovery", "sync-clients"].includes(mode)) {
+  console.error("Invalid worker mode. Use one of: sync, classify, recovery, sync-clients.");
   process.exit(1);
 }
 
@@ -32,6 +32,17 @@ async function main() {
   if (mode === "sync") {
     const { syncTrackerMailbox } = await import("@/lib/worker-core/syncTrackerMailbox");
     console.log(await syncTrackerMailbox());
+    return;
+  }
+
+  if (mode === "sync-clients") {
+    // Client sync only: no Zoho sync, no classification, no backlog processing.
+    // Aggregate-only output; environment guards (including production
+    // confirmation) are enforced inside runWorkerOnceSyncClients.
+    const { runWorkerOnceSyncClients } = await import("@/lib/worker-core/leadsClientSync");
+    const result = await runWorkerOnceSyncClients(process.env, process.argv.slice(3));
+    console.log(JSON.stringify(result));
+    if (!result.ok) process.exitCode = 1;
     return;
   }
 

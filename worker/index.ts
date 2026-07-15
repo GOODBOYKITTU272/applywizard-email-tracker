@@ -1,6 +1,15 @@
 import { createServer, type Server } from "http";
 
 import { classifyQueue } from "@/lib/worker-core/classifyQueue";
+import {
+  DEFAULT_LEADS_SYNC_INTERVAL_MS,
+  DEFAULT_LEADS_SYNC_STARTUP_DELAY_MS,
+  resolveLeadsWorkerConfig,
+  runLeadsClientSyncApply,
+  type ClientSyncReport,
+  type LeadsWorkerConfig,
+  type SyncEnvironment,
+} from "@/lib/worker-core/leadsClientSync";
 import { syncTrackerMailbox } from "@/lib/worker-core/syncTrackerMailbox";
 
 const DEFAULT_PORT = 3001;
@@ -10,6 +19,19 @@ const DEFAULT_CLASSIFY_IDLE_WAIT_MS = 10_000;
 const SYNC_STALE_MS = 5 * 60_000;
 const STARTUP_GRACE_MS = 2 * 60_000;
 const ERROR_WINDOW_MS = 60 * 60_000;
+
+export interface LeadsSyncStatus {
+  configured: boolean;
+  enabled: boolean;
+  lastStartedAt: Date | null;
+  lastCompletedAt: Date | null;
+  lastStatus: "success" | "skipped" | "failed" | null;
+  lastErrorCode: string | null;
+  lastFetchedCount: number | null;
+  lastValidCount: number | null;
+  lastMappableCount: number | null;
+  nextRunAt: Date | null;
+}
 
 export interface WorkerState {
   startedAt: Date;
@@ -21,6 +43,20 @@ export interface WorkerState {
   errorTimestamps: Date[];
   isShuttingDown: boolean;
   sleepResolvers: Set<() => void>;
+  leadsSync: LeadsSyncStatus;
+}
+
+export interface LeadsSyncHealth {
+  configured: boolean;
+  enabled: boolean;
+  last_started_at: string | null;
+  last_completed_at: string | null;
+  last_status: "success" | "skipped" | "failed" | null;
+  last_error_code: string | null;
+  last_fetched_count: number | null;
+  last_valid_count: number | null;
+  last_mappable_count: number | null;
+  next_run_at: string | null;
 }
 
 export interface HealthBody {
@@ -32,6 +68,7 @@ export interface HealthBody {
   classify_classified_total: number;
   sync_fetched_total: number;
   error_count_last_hour: number;
+  leads_sync: LeadsSyncHealth;
 }
 
 export function createWorkerState(now = new Date()): WorkerState {
@@ -45,6 +82,18 @@ export function createWorkerState(now = new Date()): WorkerState {
     errorTimestamps: [],
     isShuttingDown: false,
     sleepResolvers: new Set(),
+    leadsSync: {
+      configured: false,
+      enabled: false,
+      lastStartedAt: null,
+      lastCompletedAt: null,
+      lastStatus: null,
+      lastErrorCode: null,
+      lastFetchedCount: null,
+      lastValidCount: null,
+      lastMappableCount: null,
+      nextRunAt: null,
+    },
   };
 }
 
@@ -82,6 +131,20 @@ export function buildHealthPayload(
       classify_classified_total: state.classifyClassifiedTotal,
       sync_fetched_total: state.syncFetchedTotal,
       error_count_last_hour: errorCountLastHour(state, now),
+      // Aggregate-only Leads sync status: counts, codes, and timestamps —
+      // never credentials, client names, or email addresses.
+      leads_sync: {
+        configured: state.leadsSync.configured,
+        enabled: state.leadsSync.enabled,
+        last_started_at: state.leadsSync.lastStartedAt?.toISOString() ?? null,
+        last_completed_at: state.leadsSync.lastCompletedAt?.toISOString() ?? null,
+        last_status: state.leadsSync.lastStatus,
+        last_error_code: state.leadsSync.lastErrorCode,
+        last_fetched_count: state.leadsSync.lastFetchedCount,
+        last_valid_count: state.leadsSync.lastValidCount,
+        last_mappable_count: state.leadsSync.lastMappableCount,
+        next_run_at: state.leadsSync.nextRunAt?.toISOString() ?? null,
+      },
     },
   };
 }
@@ -171,6 +234,85 @@ async function classifyLoop(state: WorkerState): Promise<void> {
   }
 }
 
+export interface LeadsLoopDeps {
+  resolveConfig: () => LeadsWorkerConfig;
+  runApply: (target: { environment: SyncEnvironment; projectRef: string }) => Promise<ClientSyncReport>;
+}
+
+/**
+ * Leads client-sync loop. Sequential by construction: one run must finish
+ * before the next interval sleep starts, so a long run can never spawn
+ * overlapping local executions; the S2 database lock still protects against
+ * other Render instances (contention is a safe "skipped", never a crash).
+ * A failed run only records state/logs a code — Zoho sync, classification,
+ * and the health server are separate loops and keep running.
+ */
+export async function leadsSyncLoop(state: WorkerState, deps?: Partial<LeadsLoopDeps>): Promise<void> {
+  const resolveConfig = deps?.resolveConfig ?? (() => resolveLeadsWorkerConfig(process.env));
+  const runApply = deps?.runApply ?? runLeadsClientSyncApply;
+
+  const config = resolveConfig();
+  state.leadsSync.configured = config.configured;
+  state.leadsSync.enabled = config.status !== "disabled";
+  if (config.status !== "ready") {
+    console.log(
+      `[Leads Sync] inactive status=${config.status}` +
+        (config.status === "guard_failed" ? ` code=${config.guardCode}` : ""),
+    );
+    return;
+  }
+
+  const intervalMs = positiveInt(process.env.WORKER_LEADS_SYNC_INTERVAL_MS, DEFAULT_LEADS_SYNC_INTERVAL_MS);
+  const startupDelayMs = positiveInt(
+    process.env.WORKER_LEADS_SYNC_STARTUP_DELAY_MS,
+    DEFAULT_LEADS_SYNC_STARTUP_DELAY_MS,
+  );
+
+  // Staggered first run: never starts at the same instant as the Zoho loops.
+  state.leadsSync.nextRunAt = new Date(Date.now() + startupDelayMs);
+  await sleep(startupDelayMs, state);
+
+  while (!state.isShuttingDown) {
+    const started = Date.now();
+    state.leadsSync.lastStartedAt = new Date();
+    try {
+      const report = await runApply(config);
+      state.leadsSync.lastCompletedAt = new Date();
+      if (report.ok) {
+        state.leadsSync.lastStatus = "success";
+        state.leadsSync.lastErrorCode = null;
+        state.leadsSync.lastFetchedCount = report.metrics?.fetched_count ?? null;
+        state.leadsSync.lastValidCount = report.metrics?.valid_count ?? null;
+        state.leadsSync.lastMappableCount = report.metrics?.mappable_count ?? null;
+        console.log(
+          `[Leads Sync] completed fetched=${report.metrics?.fetched_count ?? 0} valid=${report.metrics?.valid_count ?? 0} mappable=${report.metrics?.mappable_count ?? 0} duration_ms=${Date.now() - started}`,
+        );
+      } else if (report.errorCode === "SYNC_ALREADY_RUNNING") {
+        // Another instance holds the DB lock — a normal skipped run, not an error.
+        state.leadsSync.lastStatus = "skipped";
+        state.leadsSync.lastErrorCode = report.errorCode;
+        console.log(`[Leads Sync] skipped code=${report.errorCode}`);
+      } else {
+        state.leadsSync.lastStatus = "failed";
+        state.leadsSync.lastErrorCode = report.errorCode ?? "SYNC_UNEXPECTED_ERROR";
+        recordError(state);
+        console.error(`[Leads Sync] failed code=${state.leadsSync.lastErrorCode}`);
+      }
+    } catch {
+      // runClientSync never throws by contract; belt-and-braces so a Leads
+      // failure can never take down the worker.
+      state.leadsSync.lastCompletedAt = new Date();
+      state.leadsSync.lastStatus = "failed";
+      state.leadsSync.lastErrorCode = "SYNC_UNEXPECTED_ERROR";
+      recordError(state);
+      console.error("[Leads Sync] failed code=SYNC_UNEXPECTED_ERROR");
+    }
+
+    state.leadsSync.nextRunAt = new Date(Date.now() + intervalMs);
+    if (!state.isShuttingDown) await sleep(intervalMs, state);
+  }
+}
+
 function createHealthServer(state: WorkerState): Server {
   return createServer((req, res) => {
     if (req.method !== "GET" || req.url !== "/health") {
@@ -208,7 +350,7 @@ export async function startWorker(): Promise<void> {
   process.once("SIGTERM", () => void stop());
   process.once("SIGINT", () => void stop());
 
-  await Promise.all([syncLoop(state), classifyLoop(state)]);
+  await Promise.all([syncLoop(state), classifyLoop(state), leadsSyncLoop(state)]);
 }
 
 process.once("uncaughtException", (error) => {
