@@ -10,6 +10,10 @@ const runsSql = readFileSync(
   resolve(__dirname, "../../supabase/migrations/202607150002_create_client_sync_runs.sql"),
   "utf8",
 );
+const lockSql = readFileSync(
+  resolve(__dirname, "../../supabase/migrations/202607150003_add_cron_lock_owner_token.sql"),
+  "utf8",
+);
 
 describe("202607150001_extend_clients_for_leads_sync", () => {
   it("adds every sync column additively", () => {
@@ -42,10 +46,24 @@ describe("202607150001_extend_clients_for_leads_sync", () => {
     expect(clientsSql).toContain("alter column assigned_ca_email drop not null");
   });
 
-  it("adds the partial unique sync identity key and the required indexes", () => {
+  it("adds a non-partial unique constraint on (source, external_client_id) that PostgREST can target", () => {
     expect(clientsSql).toMatch(
-      /create unique index clients_source_external_id_unique\s+on public\.clients \(source, external_client_id\)\s+where external_client_id is not null/,
+      /add constraint clients_source_external_client_id_key\s+unique \(source, external_client_id\)/,
     );
+    // Must NOT be partial: PostgREST cannot infer a partial index for
+    // onConflict, and Postgres already allows multiple null external ids
+    // (nulls are distinct) — so the pre-sync seed row stays valid.
+    expect(clientsSql.toLowerCase()).not.toContain("where external_client_id is not null");
+    expect(clientsSql.toLowerCase()).not.toContain("create unique index clients_source_external_id_unique");
+  });
+
+  it("keeps the sync upsert onConflict target aligned with the unique constraint", () => {
+    const syncSource = readFileSync(resolve(__dirname, "syncClients.ts"), "utf8");
+    expect(syncSource).toContain('"source,external_client_id"');
+    expect(clientsSql).toContain("unique (source, external_client_id)");
+  });
+
+  it("adds the required indexes", () => {
     expect(clientsSql).toContain("create index clients_is_active_idx on public.clients (is_active)");
     expect(clientsSql).toContain(
       "create index clients_is_recipient_mappable_idx on public.clients (is_recipient_mappable)",
@@ -103,6 +121,18 @@ describe("202607150002_create_client_sync_runs", () => {
     expect(runsSql).toContain("alter table public.client_sync_runs enable row level security");
     expect(runsSql).toContain("revoke all on public.client_sync_runs from public, anon, authenticated");
     expect(runsSql).toContain("grant select, insert, update on public.client_sync_runs to service_role");
+  });
+
+  it("adds lock ownership to cron_locks additively with a legacy-safe default", () => {
+    expect(lockSql).toContain(
+      "add column owner_token text not null default gen_random_uuid()::text",
+    );
+    // Additive only: legacy acquirers that omit owner_token keep working via
+    // the default, and existing held locks are backfilled by it.
+    const lowered = lockSql.toLowerCase();
+    expect(lowered).not.toContain("drop");
+    expect(lowered).not.toContain("delete from");
+    expect(lowered).not.toContain("truncate");
   });
 
   it("has no columns capable of persisting credentials or raw payloads", () => {

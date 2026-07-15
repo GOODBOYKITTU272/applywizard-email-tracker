@@ -33,11 +33,14 @@ alter table public.clients
 -- and its existing UNIQUE constraint treats NULLs as distinct — which is exactly
 -- the required partial uniqueness over non-null normalized recipients.
 
--- Sync identity key. Partial: rows that predate the sync (e.g. the preview seed
--- client) have no external id and must not collide with each other.
-create unique index clients_source_external_id_unique
-  on public.clients (source, external_client_id)
-  where external_client_id is not null;
+-- Sync identity key. A plain unique constraint — NOT a partial index — so
+-- PostgREST can infer it for upsert onConflict: "source,external_client_id".
+-- Rows that predate the sync (e.g. the preview seed client) keep
+-- external_client_id = null and stay valid: Postgres treats nulls as distinct
+-- in unique constraints, so any number of null-id rows may coexist.
+alter table public.clients
+  add constraint clients_source_external_client_id_key
+  unique (source, external_client_id);
 
 create index clients_is_active_idx on public.clients (is_active);
 create index clients_is_recipient_mappable_idx on public.clients (is_recipient_mappable);

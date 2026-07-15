@@ -15,6 +15,7 @@
     "test:e2e:report": "playwright show-report",
     "backfill:zoho": "tsx scripts/backfill-zoho-history.ts",
     "release:historical": "tsx scripts/release-historical-batch.ts",
+    "sync:clients": "tsx scripts/leads-sync/sync-clients.ts",
     "worker:once": "tsc -p tsconfig.worker.json && node .worker-dist/scripts/worker-once.js",
     "worker:start": "tsx worker/index.ts"
   },
