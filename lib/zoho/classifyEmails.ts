@@ -14,7 +14,7 @@ import { tryRegexExtract } from "@/lib/classify/regexExtractor";
 import { classifyWithAI } from "@/lib/classify/aiClassifier";
 import { extractOriginalRecipient } from "@/lib/classify/extractRecipient";
 import { sanitizeReason } from "@/lib/classify/sanitizeReason";
-import { refreshZohoToken, stripHtml } from "@/lib/zoho/zohoApiHelpers";
+import { needsZohoTokenRefresh, refreshZohoToken, stripHtml } from "@/lib/zoho/zohoApiHelpers";
 import {
   claimEmailsForClassification,
   getRetryDisposition,
@@ -188,8 +188,7 @@ async function runDryRun(cfg: {
   }
 
   let accessToken: string = connection.access_token;
-  const expiresAt = new Date(connection.access_token_expires_at).getTime();
-  if (expiresAt < Date.now() + 5 * 60 * 1000) {
+  if (needsZohoTokenRefresh(connection.access_token_expires_at)) {
     accessToken = await refreshZohoToken(
       connection as { zoho_account_id: string; refresh_token: string },
       cfg.clientId,
@@ -373,13 +372,11 @@ export async function classifyEmails(
     throw new Error("No active Zoho connection found. Please log in first.");
   }
 
-  // Refresh token if expired or near expiry
+  // Refresh token only after expiry; Zoho rejects repeated early refreshes.
   let accessToken: string = connection.access_token;
-  const expiresAt = new Date(connection.access_token_expires_at).getTime();
-  const bufferTime = 5 * 60 * 1000;
 
-  if (expiresAt < Date.now() + bufferTime) {
-    console.log("[Zoho Classify] Access token expired or near expiry. Refreshing...");
+  if (needsZohoTokenRefresh(connection.access_token_expires_at)) {
+    console.log("[Zoho Classify] Access token expired. Refreshing...");
     accessToken = await refreshZohoToken(
       connection as { zoho_account_id: string; refresh_token: string },
       clientId,

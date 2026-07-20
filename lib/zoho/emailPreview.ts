@@ -1,6 +1,6 @@
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { redactSensitivePatterns } from "@/lib/classify/redactionPatterns";
-import { refreshZohoToken, stripHtml } from "@/lib/zoho/zohoApiHelpers";
+import { needsZohoTokenRefresh, refreshZohoToken, stripHtml } from "@/lib/zoho/zohoApiHelpers";
 
 export const PREVIEW_MAX_LENGTH = 2000;
 
@@ -44,11 +44,12 @@ export async function getSafeEmailPreview(emailRowId: string): Promise<GetSafeEm
     if (!clientId || !clientSecret || !accountsBaseUrl || !mailBaseUrl) return { ok: false };
 
     let accessToken: string = (connection as { access_token: string }).access_token;
-    const expiresAt = new Date(
-      (connection as { access_token_expires_at: string }).access_token_expires_at,
-    ).getTime();
 
-    if (expiresAt < Date.now() + 5 * 60 * 1000) {
+    if (
+      needsZohoTokenRefresh(
+        (connection as { access_token_expires_at: string }).access_token_expires_at,
+      )
+    ) {
       accessToken = await refreshZohoToken(
         connection as { zoho_account_id: string; refresh_token: string },
         clientId,

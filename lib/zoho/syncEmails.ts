@@ -9,6 +9,7 @@
  */
 
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/serviceRole";
+import { needsZohoTokenRefresh, refreshZohoToken } from "@/lib/zoho/zohoApiHelpers";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -47,75 +48,6 @@ interface SyncCheckpointRow {
 }
 
 const DEFAULT_REPLAY_WINDOW_MINUTES = 30;
-
-// ── Token refresh helper ───────────────────────────────────────────────────────
-
-async function refreshZohoToken(
-  connection: Record<string, string>,
-  clientId: string,
-  clientSecret: string,
-  accountsBaseUrl: string,
-): Promise<string> {
-  const tokenResponse = await fetch(`${accountsBaseUrl}/oauth/v2/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: connection.refresh_token,
-    }).toString(),
-  });
-
-  const parsed: unknown = await tokenResponse.json();
-
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new Error("Invalid response format from Zoho token endpoint.");
-  }
-
-  const tokenData = parsed as Record<string, unknown>;
-
-  if (!tokenResponse.ok || tokenData.error) {
-    throw new Error(
-      `Zoho token refresh failed: ${String(tokenData.error ?? tokenResponse.status)}`,
-    );
-  }
-
-  const newAccessToken =
-    typeof tokenData.access_token === "string" && tokenData.access_token
-      ? tokenData.access_token
-      : null;
-  const expiresIn = Number(tokenData.expires_in);
-
-  console.log("[Zoho Sync] refresh access_token_received:", Boolean(newAccessToken));
-
-  if (!newAccessToken || !Number.isFinite(expiresIn) || expiresIn <= 0) {
-    throw new Error("Zoho returned incomplete data during token refresh.");
-  }
-
-  const supabase = createSupabaseServiceRoleClient();
-  const refreshTime = new Date();
-  const newExpiresAt = new Date(refreshTime.getTime() + expiresIn * 1000);
-
-  const { error: updateError } = await supabase
-    .from("zoho_connections")
-    .update({
-      access_token: newAccessToken,
-      access_token_expires_at: newExpiresAt.toISOString(),
-      last_refresh_at: refreshTime.toISOString(),
-      updated_at: refreshTime.toISOString(),
-    })
-    .eq("zoho_account_id", connection.zoho_account_id);
-
-  if (updateError) {
-    throw new Error(
-      `Failed to persist refreshed access token: ${updateError.message}`,
-    );
-  }
-
-  console.log("[Zoho Sync] Token successfully refreshed and persisted.");
-  return newAccessToken;
-}
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
@@ -184,15 +116,13 @@ export async function syncEmails(): Promise<SyncResult> {
     );
   }
 
-  // Refresh token if expired or near expiry
+  // Refresh token only after expiry; Zoho rejects repeated early refreshes.
   let accessToken: string = connection.access_token;
-  const expiresAt = new Date(connection.access_token_expires_at).getTime();
-  const bufferTime = 5 * 60 * 1000;
 
-  if (expiresAt < Date.now() + bufferTime) {
-    console.log("[Zoho Sync] Access token expired or near expiry. Refreshing...");
+  if (needsZohoTokenRefresh(connection.access_token_expires_at)) {
+    console.log("[Zoho Sync] Access token expired. Refreshing...");
     accessToken = await refreshZohoToken(
-      connection as Record<string, string>,
+      connection as { zoho_account_id: string; refresh_token: string },
       clientId,
       clientSecret,
       accountsBaseUrl,
