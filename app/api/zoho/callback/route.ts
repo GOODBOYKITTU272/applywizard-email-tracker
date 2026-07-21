@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { verifyZohoOAuthState } from "@/lib/zoho/oauthState";
 
 const STATE_COOKIE = "zoho_oauth_state";
 
@@ -14,31 +15,15 @@ function clearOAuthState(response: NextResponse): NextResponse {
   return response;
 }
 
-/**
- * Parse the state cookie.
- * Supports the new JSON format { csrf, mailbox } and the legacy plain-UUID format
- * (backward compat for any in-flight sessions from before this change).
- */
-function parseStateCookie(raw: string): { csrf: string; mailbox: string } {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      typeof (parsed as Record<string, unknown>).csrf === "string"
-    ) {
-      return {
-        csrf: (parsed as Record<string, unknown>).csrf as string,
-        mailbox:
-          typeof (parsed as Record<string, unknown>).mailbox === "string"
-            ? ((parsed as Record<string, unknown>).mailbox as string)
-            : "",
-      };
-    }
-  } catch {
-    // Legacy: cookie is a plain UUID string (no mailbox targeting)
-  }
-  return { csrf: raw, mailbox: "" };
+function invalidStateResponse(): NextResponse {
+  // Deliberately generic — never leaks which specific check (signature,
+  // expiry, version, malformed encoding) failed.
+  return clearOAuthState(
+    NextResponse.json(
+      { error: "Invalid OAuth state. Please start the login flow again." },
+      { status: 400 },
+    ),
+  );
 }
 
 /**
@@ -56,23 +41,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const rawCookie = request.cookies.get(STATE_COOKIE)?.value;
 
   if (!receivedState || !rawCookie) {
-    return clearOAuthState(
-      NextResponse.json(
-        { error: "Invalid OAuth state. Please start the login flow again." },
-        { status: 400 },
-      ),
-    );
+    return invalidStateResponse();
   }
 
-  const { csrf: expectedCsrf, mailbox: requestedMailbox } = parseStateCookie(rawCookie);
+  // Rejects missing/malformed/tampered/expired/wrong-version state before any
+  // token exchange, Supabase lookup, or Supabase write — mailbox and recovery
+  // are only trusted after this passes. No unsigned/legacy state is accepted.
+  const verified = verifyZohoOAuthState(rawCookie);
+  if (!verified.ok) {
+    return invalidStateResponse();
+  }
+
+  const { csrf: expectedCsrf, mailbox: requestedMailbox, recovery } = verified.state;
 
   if (receivedState !== expectedCsrf) {
-    return clearOAuthState(
-      NextResponse.json(
-        { error: "Invalid OAuth state. Please start the login flow again." },
-        { status: 400 },
-      ),
-    );
+    return invalidStateResponse();
   }
 
   const zohoError = searchParams.get("error");
@@ -174,6 +157,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   console.log("[Zoho OAuth] access_token_received:", Boolean(accessToken));
   console.log("[Zoho OAuth] refresh_token_received:", Boolean(newRefreshToken));
+  console.log("[Zoho OAuth] recovery_mode:", recovery);
 
   if (!accessToken || !Number.isFinite(expiresIn) || expiresIn <= 0) {
     return clearOAuthState(
@@ -303,11 +287,25 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const refreshToken =
-    newRefreshToken ||
-    (typeof existing?.refresh_token === "string" ? existing.refresh_token : null);
+  const existingRefreshToken =
+    typeof existing?.refresh_token === "string" ? existing.refresh_token : null;
 
-  if (!refreshToken) {
+  // Recovery mode exists specifically to replace a broken refresh_token — it
+  // must never fall back to the old one, or a failed recovery would silently
+  // look like a success while leaving the same broken connection in place.
+  if (recovery) {
+    if (!newRefreshToken) {
+      return clearOAuthState(
+        NextResponse.json(
+          {
+            error:
+              "Zoho did not issue a new refresh token. Recovery was not completed.",
+          },
+          { status: 400 },
+        ),
+      );
+    }
+  } else if (!newRefreshToken && !existingRefreshToken) {
     return clearOAuthState(
       NextResponse.json(
         {
@@ -318,6 +316,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       ),
     );
   }
+
+  const refreshToken = recovery ? newRefreshToken! : (newRefreshToken || existingRefreshToken)!;
 
   const now = new Date();
   const { error: writeError } = await supabase.from("zoho_connections").upsert(
@@ -345,9 +345,26 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  if (recovery) {
+    return clearOAuthState(
+      NextResponse.json(
+        {
+          message: "Zoho OAuth recovery completed.",
+          new_refresh_token_received: true,
+          connection_updated: true,
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      ),
+    );
+  }
+
   return clearOAuthState(
     NextResponse.json(
-      { message: "Zoho OAuth complete. Connection stored safely." },
+      {
+        message: "Zoho OAuth complete. Connection stored safely.",
+        new_refresh_token_received: Boolean(newRefreshToken),
+        existing_refresh_token_preserved: !newRefreshToken && Boolean(existingRefreshToken),
+      },
       { headers: { "Cache-Control": "no-store" } },
     ),
   );
