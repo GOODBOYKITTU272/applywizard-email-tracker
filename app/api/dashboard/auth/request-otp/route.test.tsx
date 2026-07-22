@@ -8,10 +8,6 @@ vi.mock("@/lib/dashboardAuth/authFlow", () => ({
   startDashboardLogin,
 }));
 
-function basicAuth(username: string, password: string): string {
-  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
-}
-
 function makeRequest(body: string, headers: Record<string, string> = {}): NextRequest {
   return new NextRequest("https://email-apply-wizz.test/api/dashboard/auth/request-otp", {
     method: "POST",
@@ -38,22 +34,12 @@ afterEach(() => {
 });
 
 describe("POST /api/dashboard/auth/request-otp", () => {
-  it("returns 401 before authFlow when Basic Auth is missing", async () => {
-    const { POST } = await import("./route");
-    const res = await POST(makeRequest(JSON.stringify({ email: "user@applywizz.ai" })));
-
-    expect(res.status).toBe(401);
-    expect(startDashboardLogin).not.toHaveBeenCalled();
-    expect(res.headers.get("WWW-Authenticate")).toBe('Basic realm="ApplyWizard Dashboard"');
-  });
-
   it("returns 200 and calls startDashboardLogin with trimmed email and request context", async () => {
     const { POST } = await import("./route");
     const res = await POST(
       makeRequest(
         JSON.stringify({ email: "  user@applywizz.ai  " }),
         {
-          authorization: basicAuth("admin", "test-dashboard-secret"),
           "x-forwarded-for": "203.0.113.10, 198.51.100.20",
           "user-agent": "ApplyWizz Browser",
         },
@@ -73,9 +59,7 @@ describe("POST /api/dashboard/auth/request-otp", () => {
     startDashboardLogin.mockResolvedValueOnce({ ok: true, nextStep: "totp", challenge: "loginchallengev1_token" });
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify({ email: "user@applywizz.ai" })),
     );
 
     expect(res.status).toBe(200);
@@ -90,9 +74,7 @@ describe("POST /api/dashboard/auth/request-otp", () => {
     startDashboardLogin.mockResolvedValueOnce(response);
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify({ email: "user@applywizz.ai" })),
     );
 
     expect(res.status).toBe(200);
@@ -102,9 +84,7 @@ describe("POST /api/dashboard/auth/request-otp", () => {
   it("rejects malformed JSON", async () => {
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest("{", {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest("{"),
     );
 
     expect(res.status).toBe(400);
@@ -119,9 +99,7 @@ describe("POST /api/dashboard/auth/request-otp", () => {
   ])("rejects %s", async (_label, payload) => {
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest(JSON.stringify(payload), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify(payload)),
     );
 
     expect(res.status).toBe(400);
@@ -132,7 +110,6 @@ describe("POST /api/dashboard/auth/request-otp", () => {
   it("rejects oversized request bodies before parsing", async () => {
     const { POST } = await import("./route");
     const req = makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {
-      authorization: basicAuth("admin", "test-dashboard-secret"),
       "content-length": "8193",
     });
     const res = await POST(req);
@@ -146,9 +123,7 @@ describe("POST /api/dashboard/auth/request-otp", () => {
     startDashboardLogin.mockRejectedValueOnce(new Error("boom"));
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify({ email: "user@applywizz.ai" })),
     );
 
     expect(res.status).toBe(400);
@@ -162,9 +137,7 @@ describe("POST /api/dashboard/auth/request-otp", () => {
     const { POST } = await import("./route");
 
     await POST(
-      makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify({ email: "user@applywizz.ai" })),
     );
 
     expect(logSpy).not.toHaveBeenCalled();

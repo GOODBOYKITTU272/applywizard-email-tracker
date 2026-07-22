@@ -1,7 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { verifyDashboardLoginTotp } from "@/lib/dashboardAuth/authFlow";
 import { setDashboardSessionCookie } from "@/lib/dashboardAuth/sessionCookie";
-import { requireDashboardBasicAuth } from "../_lib/basicAuthGate";
 import { extractRequestContext } from "../_lib/requestContext";
 
 const MAX_BODY_BYTES = 8192;
@@ -28,9 +27,6 @@ function readStringField(body: Record<string, unknown>, key: "challenge" | "code
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  const authFailure = requireDashboardBasicAuth(request);
-  if (authFailure) return authFailure;
-
   try {
     const contentLength = readRequestBodySize(request);
     if (contentLength !== null && contentLength > MAX_BODY_BYTES) {

@@ -8,10 +8,6 @@ vi.mock("@/lib/dashboardAuth/authFlow", () => ({
   verifyDashboardLoginOtp,
 }));
 
-function basicAuth(username: string, password: string): string {
-  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
-}
-
 function makeRequest(body: string, headers: Record<string, string> = {}): NextRequest {
   return new NextRequest("https://email-apply-wizz.test/api/dashboard/auth/verify-otp", {
     method: "POST",
@@ -37,14 +33,6 @@ afterEach(() => {
 });
 
 describe("POST /api/dashboard/auth/verify-otp", () => {
-  it("returns 401 before authFlow when Basic Auth is missing", async () => {
-    const { POST } = await import("./route");
-    const res = await POST(makeRequest(JSON.stringify({ otpId: "otp-123", rawOtp: "123456" })));
-
-    expect(res.status).toBe(401);
-    expect(verifyDashboardLoginOtp).not.toHaveBeenCalled();
-  });
-
   it("returns the setup challenge payload without userId", async () => {
     verifyDashboardLoginOtp.mockResolvedValueOnce({
       ok: true,
@@ -59,7 +47,6 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
       makeRequest(
         JSON.stringify({ otpId: "  otp-123  ", rawOtp: " 123456 " }),
         {
-          authorization: basicAuth("admin", "test-dashboard-secret"),
           "x-forwarded-for": "203.0.113.10",
           "user-agent": "ApplyWizz Browser",
         },
@@ -93,7 +80,6 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
     const res = await POST(
       makeRequest(
         JSON.stringify({ otpId: "otp-123", rawOtp: "123456" }),
-        { authorization: basicAuth("admin", "test-dashboard-secret") },
       ),
     );
 
@@ -111,7 +97,6 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
     const res = await POST(
       makeRequest(
         JSON.stringify({ otpId: "otp-123", rawOtp: "123456" }),
-        { authorization: basicAuth("admin", "test-dashboard-secret") },
       ),
     );
 
@@ -131,9 +116,7 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
   ])("rejects %s", async (_label, payload) => {
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest(JSON.stringify(payload), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify(payload)),
     );
 
     expect(res.status).toBe(400);
@@ -144,9 +127,7 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
   it("rejects malformed JSON", async () => {
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest("{", {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest("{"),
     );
 
     expect(res.status).toBe(400);
@@ -157,7 +138,6 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
     const { POST } = await import("./route");
     const res = await POST(
       makeRequest(JSON.stringify({ otpId: "otp-123", rawOtp: "123456" }), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
         "content-length": "8193",
       }),
     );
@@ -171,9 +151,7 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
     verifyDashboardLoginOtp.mockRejectedValueOnce(new Error("boom"));
     const { POST } = await import("./route");
     const res = await POST(
-      makeRequest(JSON.stringify({ otpId: "otp-123", rawOtp: "123456" }), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify({ otpId: "otp-123", rawOtp: "123456" })),
     );
 
     expect(res.status).toBe(400);
@@ -187,9 +165,7 @@ describe("POST /api/dashboard/auth/verify-otp", () => {
     const { POST } = await import("./route");
 
     await POST(
-      makeRequest(JSON.stringify({ otpId: "otp-123", rawOtp: "123456" }), {
-        authorization: basicAuth("admin", "test-dashboard-secret"),
-      }),
+      makeRequest(JSON.stringify({ otpId: "otp-123", rawOtp: "123456" })),
     );
 
     expect(logSpy).not.toHaveBeenCalled();

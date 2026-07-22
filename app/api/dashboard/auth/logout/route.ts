@@ -2,7 +2,6 @@ import { type NextRequest, NextResponse } from "next/server";
 
 import { clearDashboardSessionCookie, DASHBOARD_SESSION_COOKIE_NAME } from "@/lib/dashboardAuth/sessionCookie";
 import { revokeDashboardSession } from "@/lib/dashboardAuth/sessionStore";
-import { requireDashboardBasicAuth } from "../_lib/basicAuthGate";
 
 function invalidResponse(): NextResponse {
   return NextResponse.json({ ok: false }, { status: 400 });
@@ -20,9 +19,6 @@ function originMatchesRequest(request: NextRequest): boolean {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  const authFailure = requireDashboardBasicAuth(request);
-  if (authFailure) return authFailure;
-
   if (!originMatchesRequest(request)) {
     return invalidResponse();
   }

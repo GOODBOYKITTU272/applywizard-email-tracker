@@ -7,7 +7,13 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["lib/**/*.test.ts", "app/**/*.test.tsx", "components/**/*.test.tsx", "worker/**/*.test.ts"],
+    include: [
+      "middleware.test.ts",
+      "lib/**/*.test.ts",
+      "app/**/*.test.tsx",
+      "components/**/*.test.tsx",
+      "worker/**/*.test.ts",
+    ],
     exclude: ["tests/**", "node_modules/**"],
   },
 });
