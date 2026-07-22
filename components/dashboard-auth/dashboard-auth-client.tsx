@@ -1,9 +1,19 @@
 "use client";
 
-import { type ChangeEvent, type FormEvent, type ReactNode, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type FormEvent, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
 import { IconArrowRight, IconCheck, IconMail, IconRefresh, IconWarning } from "@/components/icons";
+
+// Note: this standalone landing page is not nested under app/(operations)/layout.tsx,
+// so it cannot rely on that layout's next/font/google-loaded --font-noto-sans variable.
+// Loading Noto_Sans directly here (as app/(operations)/layout.tsx does) would call the
+// next/font/google export at module scope, which is only made callable by Next's build
+// pipeline (webpack/SWC font loader) — under vitest that export is not a function, and
+// the crash would break every test importing this module, including the existing,
+// unmodified components/dashboard-auth/authenticator-setup.test.tsx suite. A plain CSS
+// font stack gives the same branded look without that hard runtime dependency.
+const BRAND_FONT_STACK = '"Noto Sans", system-ui, -apple-system, sans-serif';
 
 type AuthStep = "email" | "otp" | "setup" | "login";
 
@@ -57,26 +67,6 @@ async function postJson<T>(path: string, payload: unknown): Promise<{ ok: boolea
   } catch {
     return { ok: false, data: null };
   }
-}
-
-function StepChip({
-  active,
-  done,
-  label,
-  icon,
-}: {
-  active?: boolean;
-  done?: boolean;
-  label: string;
-  icon: ReactNode;
-}) {
-  return (
-    <div className={`dashboard-auth-step ${active ? "active" : ""} ${done ? "done" : ""}`}>
-      <span className="dashboard-auth-step__icon">{icon}</span>
-      <span className="dashboard-auth-step__label">{label}</span>
-      {done ? <IconCheck size={14} className="dashboard-auth-step__check" /> : null}
-    </div>
-  );
 }
 
 export function AuthenticatorSetup({
@@ -207,18 +197,6 @@ export function DashboardAuthClient() {
   const [provisioningUri, setProvisioningUri] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const steps = useMemo(
-    () => [
-      { key: "email", label: "Email", icon: <IconMail size={14} /> },
-      { key: "otp", label: "OTP", icon: <IconArrowRight size={14} /> },
-      { key: "setup", label: "Authenticator setup", icon: <IconCheck size={14} /> },
-      { key: "login", label: "Authenticator login", icon: <IconCheck size={14} /> },
-    ],
-    [],
-  );
-
-  const activeStepIndex = step === "email" ? 0 : step === "otp" ? 1 : step === "setup" ? 2 : 3;
 
   function resetFlow() {
     busyRef.current = false;
@@ -409,131 +387,144 @@ export function DashboardAuthClient() {
 
   return (
     <main className="dashboard-auth-shell" data-testid="dashboard-auth-shell" data-step={step}>
-      <div className="dashboard-auth-panel">
-        <header className="dashboard-auth-header">
-          <div className="dashboard-auth-brand">
-            <span className="dashboard-auth-brand__mark">
-              <IconMail size={18} />
-            </span>
-            <div>
-              <div className="dashboard-auth-kicker">ApplyWizz Dashboard</div>
-              <h1 className="dashboard-auth-title">Sign in</h1>
-            </div>
-          </div>
-        </header>
+      <div className="dashboard-auth-layout">
+        <aside className="dashboard-auth-brand-panel">
+          <div className="dashboard-auth-brand-mark">ApplyWizz</div>
+          <p className="dashboard-auth-brand-tagline">Your Career Partner</p>
+          <h2 className="dashboard-auth-brand-heading">Email Operations Console</h2>
+          <p className="dashboard-auth-brand-copy">
+            Real-time visibility into client emails, classification activity and operations.
+          </p>
+          <ul className="dashboard-auth-trust-list">
+            <li>Secure</li>
+            <li>Private</li>
+            <li>Real-time</li>
+            <li>Internal Use Only</li>
+          </ul>
+        </aside>
 
-        <section className="dashboard-auth-steps" aria-label="Authentication steps">
-          {steps.map((item, index) => (
-            <StepChip
-              key={item.key}
-              label={item.label}
-              icon={item.icon}
-              active={activeStepIndex === index}
-              done={activeStepIndex > index}
+        <div className="dashboard-auth-panel">
+          <header className="dashboard-auth-header">
+            <div className="dashboard-auth-brand">
+              <span className="dashboard-auth-brand__mark">
+                <IconMail size={18} />
+              </span>
+              <div>
+                <div className="dashboard-auth-kicker">ApplyWizz Dashboard</div>
+                <h1 className="dashboard-auth-title">Sign in</h1>
+              </div>
+            </div>
+          </header>
+
+          {step === "otp" || step === "setup" ? (
+            <ol className="dashboard-auth-progress" aria-label="Setup progress">
+              <li className={step === "otp" || step === "setup" ? "done" : ""}>1. Verify Email</li>
+              <li className={step === "setup" ? "done" : ""}>2. Secure Account</li>
+              <li>3. Complete</li>
+            </ol>
+          ) : null}
+
+          {error ? (
+            <div className="dashboard-auth-error" role="alert" data-testid="dashboard-auth-error">
+              <IconWarning size={16} />
+              <span>{error}</span>
+            </div>
+          ) : null}
+
+          {step === "email" ? (
+            <form className="dashboard-auth-form" onSubmit={handleRequestOtp}>
+              <label className="dashboard-auth-field">
+                <span>Email</span>
+                <input
+                  data-testid="dashboard-auth-email"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="name@applywizz.ai"
+                  maxLength={254}
+                  required
+                />
+              </label>
+              <button type="submit" className="dashboard-auth-button" disabled={busy}>
+                {busy ? "Sending..." : "Send OTP"}
+                {!busy ? <IconArrowRight size={16} /> : null}
+              </button>
+            </form>
+          ) : null}
+
+          {step === "otp" ? (
+            <form className="dashboard-auth-form" onSubmit={handleVerifyOtp}>
+              <h2 className="dashboard-auth-step-heading">Verify the email code</h2>
+              <label className="dashboard-auth-field">
+                <span>6-digit OTP</span>
+                <input
+                  data-testid="dashboard-auth-otp"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={otp}
+                  onChange={(event) => setOtp(sanitizeNumeric(event.target.value, 6))}
+                  placeholder="123456"
+                  maxLength={6}
+                  required
+                />
+              </label>
+              <div className="dashboard-auth-actions">
+                <button type="button" className="dashboard-auth-button dashboard-auth-button--ghost" onClick={resetFlow} disabled={busy}>
+                  <IconRefresh size={16} />
+                  Use another email
+                </button>
+                <button type="submit" className="dashboard-auth-button" disabled={busy}>
+                  {busy ? "Checking..." : "Continue"}
+                  {!busy ? <IconArrowRight size={16} /> : null}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
+          {step === "setup" ? (
+            <AuthenticatorSetup
+              provisioningUri={provisioningUri}
+              totpSecret={totpSecret}
+              setupCode={setupCode}
+              busy={busy}
+              onCodeChange={(event) => setSetupCode(sanitizeNumeric(event.target.value, 6))}
+              onSubmit={handleCompleteSetup}
+              onReset={resetFlow}
             />
-          ))}
-        </section>
+          ) : null}
 
-        {error ? (
-          <div className="dashboard-auth-error" role="alert" data-testid="dashboard-auth-error">
-            <IconWarning size={16} />
-            <span>{error}</span>
-          </div>
-        ) : null}
-
-        {step === "email" ? (
-          <form className="dashboard-auth-form" onSubmit={handleRequestOtp}>
-            <label className="dashboard-auth-field">
-              <span>Email</span>
-              <input
-                data-testid="dashboard-auth-email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="name@applywizz.ai"
-                maxLength={254}
-                required
-              />
-            </label>
-            <button type="submit" className="dashboard-auth-button" disabled={busy}>
-              {busy ? "Sending..." : "Send OTP"}
-              {!busy ? <IconArrowRight size={16} /> : null}
-            </button>
-          </form>
-        ) : null}
-
-        {step === "otp" ? (
-          <form className="dashboard-auth-form" onSubmit={handleVerifyOtp}>
-            <h2 className="dashboard-auth-step-heading">Verify the email code</h2>
-            <label className="dashboard-auth-field">
-              <span>6-digit OTP</span>
-              <input
-                data-testid="dashboard-auth-otp"
-                type="text"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                value={otp}
-                onChange={(event) => setOtp(sanitizeNumeric(event.target.value, 6))}
-                placeholder="123456"
-                maxLength={6}
-                required
-              />
-            </label>
-            <div className="dashboard-auth-actions">
-              <button type="button" className="dashboard-auth-button dashboard-auth-button--ghost" onClick={resetFlow} disabled={busy}>
-                <IconRefresh size={16} />
-                Use another email
-              </button>
-              <button type="submit" className="dashboard-auth-button" disabled={busy}>
-                {busy ? "Checking..." : "Continue"}
-                {!busy ? <IconArrowRight size={16} /> : null}
-              </button>
-            </div>
-          </form>
-        ) : null}
-
-        {step === "setup" ? (
-          <AuthenticatorSetup
-            provisioningUri={provisioningUri}
-            totpSecret={totpSecret}
-            setupCode={setupCode}
-            busy={busy}
-            onCodeChange={(event) => setSetupCode(sanitizeNumeric(event.target.value, 6))}
-            onSubmit={handleCompleteSetup}
-            onReset={resetFlow}
-          />
-        ) : null}
-
-        {step === "login" ? (
-          <form className="dashboard-auth-form" onSubmit={handleLogin}>
-            <h2 className="dashboard-auth-step-heading">Enter your authenticator code</h2>
-            <label className="dashboard-auth-field">
-              <span>6-digit code</span>
-              <input
-                data-testid="dashboard-auth-login-code"
-                type="text"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                value={loginCode}
-                onChange={(event) => setLoginCode(sanitizeNumeric(event.target.value, 6))}
-                placeholder="123456"
-                maxLength={6}
-                required
-              />
-            </label>
-            <div className="dashboard-auth-actions">
-              <button type="button" className="dashboard-auth-button dashboard-auth-button--ghost" onClick={resetFlow} disabled={busy}>
-                <IconRefresh size={16} />
-                Use another email
-              </button>
-              <button type="submit" className="dashboard-auth-button" disabled={busy}>
-                {busy ? "Signing in..." : "Sign in"}
-                {!busy ? <IconArrowRight size={16} /> : null}
-              </button>
-            </div>
-          </form>
-        ) : null}
+          {step === "login" ? (
+            <form className="dashboard-auth-form" onSubmit={handleLogin}>
+              <h2 className="dashboard-auth-step-heading">Enter your authenticator code</h2>
+              <label className="dashboard-auth-field">
+                <span>6-digit code</span>
+                <input
+                  data-testid="dashboard-auth-login-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={loginCode}
+                  onChange={(event) => setLoginCode(sanitizeNumeric(event.target.value, 6))}
+                  placeholder="123456"
+                  maxLength={6}
+                  required
+                />
+              </label>
+              <div className="dashboard-auth-actions">
+                <button type="button" className="dashboard-auth-button dashboard-auth-button--ghost" onClick={resetFlow} disabled={busy}>
+                  <IconRefresh size={16} />
+                  Use another email
+                </button>
+                <button type="submit" className="dashboard-auth-button" disabled={busy}>
+                  {busy ? "Signing in..." : "Sign in"}
+                  {!busy ? <IconArrowRight size={16} /> : null}
+                </button>
+              </div>
+            </form>
+          ) : null}
+        </div>
       </div>
 
       <style>{`
@@ -547,15 +538,102 @@ export function DashboardAuthClient() {
             radial-gradient(circle at 80% 80%, rgba(167, 139, 250, 0.12), transparent 28%),
             var(--color-bg);
           color: var(--color-text-primary);
+          font-family: ${BRAND_FONT_STACK};
+        }
+        .dashboard-auth-layout {
+          width: min(100%, 1080px);
+          display: grid;
+          grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+          gap: 0;
+          border-radius: 20px;
+          overflow: hidden;
+          box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+        }
+        .dashboard-auth-brand-panel {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          padding: 40px 32px;
+          background: #0b1d33;
+          color: #f5f5f5;
+        }
+        .dashboard-auth-brand-mark {
+          font-family: var(--font-display, ${BRAND_FONT_STACK});
+          font-weight: 800;
+          font-size: 1.4rem;
+          letter-spacing: 0.02em;
+          color: #ffffff;
+        }
+        .dashboard-auth-brand-tagline {
+          font-size: 0.85rem;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          color: #29fe29;
+          font-weight: 600;
+        }
+        .dashboard-auth-brand-heading {
+          font-family: var(--font-display, ${BRAND_FONT_STACK});
+          font-size: clamp(1.5rem, 2.6vw, 2.1rem);
+          line-height: 1.15;
+          margin-top: 12px;
+        }
+        .dashboard-auth-brand-copy {
+          color: rgba(245, 245, 245, 0.78);
+          font-size: 0.98rem;
+          max-width: 42ch;
+        }
+        .dashboard-auth-trust-list {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: auto;
+          padding-top: 24px;
+          list-style: none;
+        }
+        .dashboard-auth-trust-list li {
+          padding: 6px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(44, 118, 255, 0.35);
+          background: rgba(44, 118, 255, 0.12);
+          font-size: 0.78rem;
+          font-weight: 600;
+          color: #d7e4ff;
         }
         .dashboard-auth-panel {
-          width: min(100%, 760px);
           border: 1px solid var(--color-border);
-          border-radius: 20px;
           background: rgba(15, 17, 23, 0.88);
           backdrop-filter: blur(18px);
-          box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
           padding: 28px;
+        }
+        .dashboard-auth-progress {
+          display: flex;
+          gap: 10px;
+          margin: 0 0 20px;
+          list-style: none;
+        }
+        .dashboard-auth-progress li {
+          flex: 1;
+          padding: 8px 10px;
+          border-radius: 10px;
+          border: 1px solid var(--color-border);
+          background: rgba(255, 255, 255, 0.02);
+          color: var(--color-text-secondary);
+          font-size: 0.78rem;
+          font-weight: 600;
+          text-align: center;
+        }
+        .dashboard-auth-progress li.done {
+          border-color: rgba(41, 254, 41, 0.35);
+          background: rgba(41, 254, 41, 0.1);
+          color: var(--color-text-primary);
+        }
+        @media (max-width: 900px) {
+          .dashboard-auth-layout {
+            grid-template-columns: 1fr;
+          }
+          .dashboard-auth-brand-panel {
+            padding: 28px 24px;
+          }
         }
         .dashboard-auth-header {
           display: flex;
@@ -586,53 +664,10 @@ export function DashboardAuthClient() {
           color: var(--color-text-muted);
         }
         .dashboard-auth-title {
-          font-family: var(--font-display);
+          font-family: var(--font-display, ${BRAND_FONT_STACK});
           font-size: clamp(2rem, 4vw, 2.8rem);
           line-height: 1.08;
           margin-top: 2px;
-        }
-        .dashboard-auth-subtitle {
-          color: var(--color-text-secondary);
-          font-size: 0.98rem;
-        }
-        .dashboard-auth-steps {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 10px;
-          margin: 24px 0;
-        }
-        .dashboard-auth-step {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          min-width: 0;
-          padding: 10px 12px;
-          border-radius: 12px;
-          border: 1px solid var(--color-border);
-          background: rgba(255, 255, 255, 0.02);
-          color: var(--color-text-secondary);
-        }
-        .dashboard-auth-step.active {
-          border-color: rgba(108, 99, 255, 0.45);
-          background: rgba(108, 99, 255, 0.12);
-          color: var(--color-text-primary);
-        }
-        .dashboard-auth-step.done {
-          border-color: rgba(110, 231, 183, 0.28);
-          background: rgba(110, 231, 183, 0.08);
-          color: var(--color-text-primary);
-        }
-        .dashboard-auth-step__icon,
-        .dashboard-auth-step__check {
-          display: inline-flex;
-          flex: 0 0 auto;
-        }
-        .dashboard-auth-step__label {
-          min-width: 0;
-          font-size: 0.9rem;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
         }
         .dashboard-auth-error {
           display: flex;
@@ -784,8 +819,8 @@ export function DashboardAuthClient() {
           .dashboard-auth-panel {
             padding: 20px;
           }
-          .dashboard-auth-steps {
-            grid-template-columns: 1fr 1fr;
+          .dashboard-auth-progress {
+            flex-direction: column;
           }
           .dashboard-auth-actions {
             flex-direction: column;
