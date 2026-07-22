@@ -471,7 +471,7 @@ export default function CAPortfolioPage() {
               </div>
 
               <div className="form-group">
-                <label htmlFor="advisor-email">ApplyWizard Staff Email</label>
+                <label htmlFor="advisor-email">CA Email</label>
                 <input
                   type="email"
                   id="advisor-email"

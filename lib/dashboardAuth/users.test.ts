@@ -37,7 +37,7 @@ let selectResult: SelectResult;
 let updateResult: UpdateResult;
 
 interface CallRecord {
-  kind: "select" | "select.eq" | "update" | "update.eq" | "update.select";
+  kind: "select" | "select.eq" | "update" | "update.eq" | "update.select" | "insert" | "insert.select";
   table: string;
   columns?: string;
   payload?: Record<string, unknown>;
@@ -46,6 +46,7 @@ interface CallRecord {
 }
 
 let calls: CallRecord[];
+let forceNextInsertConflict = false;
 
 vi.mock("@/lib/supabase/serviceRole", () => ({
   createSupabaseServiceRoleClient: () => ({
@@ -82,9 +83,64 @@ vi.mock("@/lib/supabase/serviceRole", () => ({
         };
         return chain;
       },
+      insert: (payload: Record<string, unknown>) => {
+        calls.push({ kind: "insert", table, payload });
+        return {
+          select: (columns: string) => {
+            calls.push({ kind: "insert.select", table, columns });
+            return {
+              maybeSingle: async () => {
+                if (table === "dashboard_users" && forceNextInsertConflict) {
+                  forceNextInsertConflict = false;
+                  // The conflicting row only becomes visible now — simulating a
+                  // concurrent process committing its insert at the moment ours
+                  // collides, not before. If it were visible earlier, the initial
+                  // select (before this insert attempt) would short-circuit and
+                  // the conflict path would never actually be exercised.
+                  if (pendingRaceRow) {
+                    users.push(pendingRaceRow);
+                    pendingRaceRow = null;
+                  }
+                  return { data: null, error: { code: "23505", message: "duplicate key" } };
+                }
+                return applyInsert(table, payload);
+              },
+            };
+          },
+        };
+      },
     }),
   }),
 }));
+
+let pendingRaceRow: DashboardUserRow | null = null;
+
+function noInsertOccurred(): boolean {
+  return !calls.some((call) => call.kind === "insert");
+}
+
+function forceNextDashboardUserInsertToReturn23505ThenExposeRow(row: DashboardUserRow): void {
+  forceNextInsertConflict = true;
+  pendingRaceRow = row;
+}
+
+function applyInsert(
+  table: string,
+  payload: Record<string, unknown>,
+): { data: DashboardUserRow | null; error: { code?: string; message: string } | null } {
+  if (table !== "dashboard_users") return { data: null, error: null };
+
+  const newUser: DashboardUserRow = {
+    id: `user-${users.length + 1}`,
+    email: String(payload.email ?? ""),
+    role: payload.role as DashboardUserRow["role"],
+    status: (payload.status as DashboardUserRow["status"]) ?? "active",
+    totp_enabled: false,
+    totp_secret_encrypted: null,
+  };
+  users.push(newUser);
+  return { data: newUser, error: null };
+}
 
 function findUserByColumn(column: "email_normalized" | "id", value: string): DashboardUserRow | null {
   return users.find((user) => {
@@ -145,6 +201,8 @@ function applyUpdate(
 beforeEach(() => {
   vi.resetModules();
   calls = [];
+  forceNextInsertConflict = false;
+  pendingRaceRow = null;
   selectResult = { data: null, error: null };
   updateResult = { data: { id: activeUser.id }, error: null };
   users = [
@@ -286,5 +344,84 @@ describe("setDashboardUserTotpSecret", () => {
     await expect(
       setDashboardUserTotpSecret({ userId: "missing", encryptedSecret: "totp-secret-encrypted" }),
     ).resolves.toEqual({ ok: false });
+  });
+});
+
+describe("getOrCreateDashboardUserForLogin", () => {
+  it("creates a new active ca user for a valid applywizz email", async () => {
+    const { getOrCreateDashboardUserForLogin } = await import("./users");
+    await expect(getOrCreateDashboardUserForLogin("New.User@ApplyWizz.AI")).resolves.toMatchObject({
+      created: true,
+      user: {
+        email: "new.user@applywizz.ai",
+        role: "ca",
+        status: "active",
+        totpEnabled: false,
+      },
+    });
+  });
+
+  it("returns existing users unchanged and created=false", async () => {
+    const { getOrCreateDashboardUserForLogin } = await import("./users");
+    await expect(getOrCreateDashboardUserForLogin("admin@applywizz.ai")).resolves.toMatchObject({
+      created: false,
+      user: { id: "user-1", role: "admin_ceo", status: "active" },
+    });
+    expect(noInsertOccurred()).toBe(true);
+  });
+
+  it("returns disabled users unchanged so authFlow can block them", async () => {
+    const { getOrCreateDashboardUserForLogin } = await import("./users");
+    await expect(getOrCreateDashboardUserForLogin("ca@applywizz.ai")).resolves.toMatchObject({
+      created: false,
+      user: { status: "disabled" },
+    });
+  });
+
+  it("returns null and inserts nothing for blocked domains", async () => {
+    const { getOrCreateDashboardUserForLogin } = await import("./users");
+    await expect(getOrCreateDashboardUserForLogin("user@applywizard.ai")).resolves.toBeNull();
+    expect(noInsertOccurred()).toBe(true);
+  });
+
+  it.each([
+    ["plus alias", "user+test@applywizz.ai"],
+    ["external domain", "user@gmail.com"],
+    ["lookalike product domain", "user@applywizard.ai"],
+    ["subdomain", "user@sub.applywizz.ai"],
+    ["lookalike suffix domain", "user@applywizz.ai.evil"],
+  ])(
+    "blocks login for a pre-existing active row with a policy-blocked email (%s)",
+    async (_label, email) => {
+      users.push({
+        id: "blocked-existing",
+        email,
+        role: "ca",
+        status: "active",
+        totp_enabled: false,
+        totp_secret_encrypted: null,
+      });
+
+      const { getOrCreateDashboardUserForLogin } = await import("./users");
+      await expect(getOrCreateDashboardUserForLogin(email)).resolves.toBeNull();
+      expect(noInsertOccurred()).toBe(true);
+    },
+  );
+
+  it("recovers from PostgreSQL 23505 by re-reading the winning row", async () => {
+    forceNextDashboardUserInsertToReturn23505ThenExposeRow({
+      id: "race-user",
+      email: "race@applywizz.ai",
+      role: "ca",
+      status: "active",
+      totp_enabled: false,
+      totp_secret_encrypted: null,
+    });
+
+    const { getOrCreateDashboardUserForLogin } = await import("./users");
+    await expect(getOrCreateDashboardUserForLogin("race@applywizz.ai")).resolves.toMatchObject({
+      created: false,
+      user: { id: "race-user", email: "race@applywizz.ai" },
+    });
   });
 });

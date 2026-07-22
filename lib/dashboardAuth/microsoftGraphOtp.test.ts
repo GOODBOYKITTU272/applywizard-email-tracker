@@ -97,18 +97,24 @@ describe("sendDashboardOtpEmail", () => {
 
     const { sendDashboardOtpEmail } = await import("./microsoftGraphOtp");
 
-    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({ ok: false });
+    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({
+      ok: false,
+      reason: "explicit_failure",
+    });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("returns ok:false when the token request fails, without calling sendMail", async () => {
+  it("returns ok:false with explicit_failure when the token request fails, without calling sendMail", async () => {
     stubAllEnv();
     const fetchMock = vi.fn().mockResolvedValue(tokenResponse({ error: "invalid_client" }, 401));
     vi.stubGlobal("fetch", fetchMock);
 
     const { sendDashboardOtpEmail } = await import("./microsoftGraphOtp");
 
-    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({ ok: false });
+    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({
+      ok: false,
+      reason: "explicit_failure",
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -137,7 +143,7 @@ describe("sendDashboardOtpEmail", () => {
     expect(body.message.body.content).toContain("123456");
   });
 
-  it("returns ok:false when the Graph sendMail request is not ok", async () => {
+  it("returns ok:false with explicit_failure when the Graph sendMail request is not ok", async () => {
     stubAllEnv();
     const fetchMock = vi
       .fn()
@@ -147,10 +153,13 @@ describe("sendDashboardOtpEmail", () => {
 
     const { sendDashboardOtpEmail } = await import("./microsoftGraphOtp");
 
-    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({ ok: false });
+    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({
+      ok: false,
+      reason: "explicit_failure",
+    });
   });
 
-  it("returns ok:false when the send request throws", async () => {
+  it("returns ok:false with timeout_or_unknown when the send request throws", async () => {
     stubAllEnv();
     const fetchMock = vi
       .fn()
@@ -160,7 +169,10 @@ describe("sendDashboardOtpEmail", () => {
 
     const { sendDashboardOtpEmail } = await import("./microsoftGraphOtp");
 
-    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({ ok: false });
+    await expect(sendDashboardOtpEmail({ to: "staff@applywizz.ai", otp: "123456" })).resolves.toEqual({
+      ok: false,
+      reason: "timeout_or_unknown",
+    });
   });
 
   it("never logs the access token, client secret, auth header, Graph error, or OTP", async () => {

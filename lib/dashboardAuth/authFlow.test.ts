@@ -17,7 +17,10 @@ type OtpState = {
   userId: string;
   rawOtp: string;
   used: boolean;
+  invalidated: boolean;
 };
+
+type CronLockRow = { lock_key: string; started_at: string; owner_token: string };
 
 type AuditCall = Record<string, unknown>;
 
@@ -35,6 +38,12 @@ let setTotpSecretCalls: number;
 let otpRequestThrottleChecks: number;
 let totpSetupThrottleChecks: number;
 let totpLoginThrottleChecks: number;
+let invalidatedOtps: string[];
+let cronLocks: CronLockRow[];
+let nextOtpInsertResult: { ok: false } | null;
+let nextEmailSendResult: { ok: false; reason: "explicit_failure" | "timeout_or_unknown" } | null;
+let pendingFirstEmailGate: Promise<void> | null;
+let loginStartLockBackendUnreachable: boolean;
 
 const TEST_TIME = new Date("2026-07-11T10:00:00.000Z");
 const SESSION_TOKEN_REGEX = /^[A-Za-z0-9_-]+$/u;
@@ -79,18 +88,37 @@ function referenceTotp(secret: string, now: Date): string {
 }
 
 vi.mock("@/lib/dashboardAuth/users", () => ({
-  getDashboardUserByEmail: async (email: string) => {
-    userLookupCalls += 1;
+  getOrCreateDashboardUserForLogin: async (email: string) => {
     const normalized = normalizeEmail(email);
-    return users
-      .filter((user) => normalizeEmail(user.email) === normalized)
-      .map((user) => ({
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        status: user.status,
-        totpEnabled: user.totpEnabled,
-      }))[0] ?? null;
+    if (!normalized.endsWith("@applywizz.ai") || normalized.includes("+")) return null;
+
+    const existing = users.find((user) => normalizeEmail(user.email) === normalized);
+    if (existing) {
+      return {
+        created: false,
+        user: {
+          id: existing.id,
+          email: existing.email,
+          role: existing.role,
+          status: existing.status,
+          totpEnabled: existing.totpEnabled,
+        },
+      };
+    }
+
+    const created: UserState = {
+      id: `user-${users.length + 1}`,
+      email: normalized,
+      role: "ca",
+      status: "active",
+      totpEnabled: false,
+      totpSecretEncrypted: null,
+    };
+    users.push(created);
+    return {
+      created: true,
+      user: { id: created.id, email: created.email, role: created.role, status: created.status, totpEnabled: false },
+    };
   },
   getDashboardUserById: async (userId: string) => {
     userLookupCalls += 1;
@@ -130,24 +158,99 @@ vi.mock("@/lib/dashboardAuth/users", () => ({
 vi.mock("@/lib/dashboardAuth/otpStore", () => ({
   createDashboardEmailOtp: async (params: { userId: string; rawOtp: string }) => {
     createOtpCalls.push(params);
+    if (nextOtpInsertResult) {
+      const result = nextOtpInsertResult;
+      nextOtpInsertResult = null;
+      return result;
+    }
     const otpId = `otp-${++otpCounter}`;
-    otps.push({ id: otpId, userId: params.userId, rawOtp: params.rawOtp, used: false });
+    otps.push({ id: otpId, userId: params.userId, rawOtp: params.rawOtp, used: false, invalidated: false });
     return { ok: true, otpId, expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() };
   },
   verifyDashboardEmailOtp: async (params: { otpId: string; rawOtp: string }) => {
     const otp = otps.find((entry) => entry.id === params.otpId);
     if (!otp) return { ok: false, reason: "not_found" as const };
-    if (otp.used) return { ok: false, reason: "used" as const };
+    if (otp.used || otp.invalidated) return { ok: false, reason: "used" as const };
     if (otp.rawOtp !== params.rawOtp) return { ok: false, reason: "incorrect" as const };
     otp.used = true;
     return { ok: true, userId: otp.userId };
+  },
+  getLatestUsableDashboardEmailOtp: async (userId: string) => {
+    const usable = [...otps].reverse().find((entry) => entry.userId === userId && !entry.used && !entry.invalidated);
+    if (!usable) return { ok: false as const };
+    return { ok: true as const, challengeId: usable.id, expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString() };
+  },
+  invalidateDashboardEmailOtp: async (otpId: string) => {
+    invalidatedOtps.push(otpId);
+    const otp = otps.find((entry) => entry.id === otpId);
+    if (otp) otp.invalidated = true;
+    return { ok: true };
   },
 }));
 
 vi.mock("@/lib/dashboardAuth/microsoftGraphOtp", () => ({
   sendDashboardOtpEmail: async (params: { to: string; otp: string }) => {
+    if (pendingFirstEmailGate) {
+      const gate = pendingFirstEmailGate;
+      pendingFirstEmailGate = null;
+      await gate;
+    }
+    if (nextEmailSendResult) {
+      const result = nextEmailSendResult;
+      nextEmailSendResult = null;
+      return result;
+    }
     sentEmails.push(params);
     return { ok: true };
+  },
+}));
+
+vi.mock("@/lib/supabase/serviceRole", () => ({
+  createSupabaseServiceRoleClient: () => {
+    if (loginStartLockBackendUnreachable) {
+      throw new Error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
+    }
+    return {
+      from: (table: string) => {
+        if (table !== "cron_locks") throw new Error(`unexpected table ${table}`);
+        return {
+          delete: () => {
+            const eqFilters: Record<string, string> = {};
+            let ltFilter: { column: keyof CronLockRow; value: string } | null = null;
+            const chain = {
+              eq: (column: string, value: string) => {
+                eqFilters[column] = value;
+                return chain;
+              },
+              lt: (column: keyof CronLockRow, value: string) => {
+                ltFilter = { column, value };
+                return chain;
+              },
+              then: (resolve: (value: { error: null }) => void) => {
+                cronLocks = cronLocks.filter((row) => {
+                  const matchesEq = Object.entries(eqFilters).every(
+                    ([column, value]) => row[column as keyof CronLockRow] === value,
+                  );
+                  const matchesLt = ltFilter
+                    ? new Date(row[ltFilter.column]).getTime() < new Date(ltFilter.value).getTime()
+                    : true;
+                  return !(matchesEq && matchesLt);
+                });
+                resolve({ error: null });
+              },
+            };
+            return chain;
+          },
+          insert: async (row: CronLockRow) => {
+            if (cronLocks.some((existing) => existing.lock_key === row.lock_key)) {
+              return { error: { code: "23505", message: "duplicate key" } };
+            }
+            cronLocks.push(row);
+            return { error: null };
+          },
+        };
+      },
+    };
   },
 }));
 
@@ -227,28 +330,122 @@ beforeEach(() => {
   otpRequestThrottleChecks = 0;
   totpSetupThrottleChecks = 0;
   totpLoginThrottleChecks = 0;
+  invalidatedOtps = [];
+  cronLocks = [];
+  nextOtpInsertResult = null;
+  nextEmailSendResult = null;
+  pendingFirstEmailGate = null;
+  loginStartLockBackendUnreachable = false;
 });
 
-describe("requestDashboardLoginOtp", () => {
-  it("returns the same shape for unknown, disabled, and active users while only sending email for the active user", async () => {
-    const { requestDashboardLoginOtp } = await import("./authFlow");
+function failNextOtpInsert(): void {
+  nextOtpInsertResult = { ok: false };
+}
 
-    const unknown = await requestDashboardLoginOtp({ email: "missing@applywizz.ai", ip: "203.0.113.10", userAgent: "UA" });
-    const disabled = await requestDashboardLoginOtp({ email: "ca@applywizz.ai", ip: "203.0.113.10", userAgent: "UA" });
-    const active = await requestDashboardLoginOtp({ email: "admin@applywizz.ai", ip: "203.0.113.10", userAgent: "UA" });
+function failNextOtpEmailSend(): void {
+  nextEmailSendResult = { ok: false, reason: "explicit_failure" };
+}
 
-    expect(Object.keys(unknown).sort()).toEqual(["ok", "otpId"]);
-    expect(Object.keys(disabled).sort()).toEqual(["ok", "otpId"]);
-    expect(Object.keys(active).sort()).toEqual(["ok", "otpId"]);
-    expect(unknown.ok).toBe(true);
-    expect(disabled.ok).toBe(true);
-    expect(active.ok).toBe(true);
-    expect(unknown.otpId).not.toBe(active.otpId);
-    expect(disabled.otpId).not.toBe(active.otpId);
+function timeoutAfterPotentialProviderAcceptance(): void {
+  nextEmailSendResult = { ok: false, reason: "timeout_or_unknown" };
+}
+
+function deferFirstLoginStartLockRelease(): { release: () => void } {
+  let release!: () => void;
+  pendingFirstEmailGate = new Promise((resolve) => {
+    release = resolve;
+  });
+  return { release };
+}
+
+describe("startDashboardLogin", () => {
+  it("auto-provisions a first-time applywizz user, sends email OTP, and creates no session", async () => {
+    const { startDashboardLogin } = await import("./authFlow");
+    const result = await startDashboardLogin({ email: "new.ca@applywizz.ai" });
+
+    expect(result).toEqual({ ok: true, nextStep: "email_otp", challengeId: expect.any(String) });
     expect(sentEmails).toHaveLength(1);
-    expect(sentEmails[0]).toMatchObject({ to: "admin@applywizz.ai" });
-    expect(createOtpCalls).toEqual([{ userId: "user-1", rawOtp: sentEmails[0].otp }]);
-    expect(JSON.stringify(audits)).not.toContain("admin@applywizz.ai");
+    expect(createOtpCalls).toHaveLength(1);
+    expect(sessions).toHaveLength(0);
+    expect(audits).toContainEqual(expect.objectContaining({ eventType: "account_auto_provisioned", success: true }));
+  });
+
+  it("does not create a false auto-provision audit event for existing users", async () => {
+    const { startDashboardLogin } = await import("./authFlow");
+    await startDashboardLogin({ email: "admin@applywizz.ai" });
+    expect(audits.filter((event) => event.eventType === "account_auto_provisioned")).toHaveLength(0);
+  });
+
+  it("serializes concurrent first-login starts so only one OTP and email are issued", async () => {
+    vi.useRealTimers();
+    const firstLock = deferFirstLoginStartLockRelease();
+    const { startDashboardLogin } = await import("./authFlow");
+    const starts = Promise.all([
+      startDashboardLogin({ email: "race@applywizz.ai" }),
+      startDashboardLogin({ email: "race@applywizz.ai" }),
+    ]);
+    firstLock.release();
+    const [first, second] = await starts;
+
+    if (first.nextStep !== "email_otp" || second.nextStep !== "email_otp") {
+      throw new Error("expected both concurrent starts to resolve to email_otp");
+    }
+    expect(second.challengeId).toBe(first.challengeId);
+    expect(audits.filter((event) => event.eventType === "account_auto_provisioned")).toHaveLength(1);
+    expect(createOtpCalls).toHaveLength(1);
+    expect(sentEmails).toHaveLength(1);
+  });
+
+  it("routes returning TOTP users directly to authenticator login with no email OTP", async () => {
+    users[0].totpEnabled = true;
+    users[0].totpSecretEncrypted = "encrypted-secret";
+
+    const { startDashboardLogin } = await import("./authFlow");
+    const result = await startDashboardLogin({ email: "admin@applywizz.ai" });
+
+    expect(result).toEqual({ ok: true, nextStep: "totp", challenge: expect.stringMatching(/^loginchallengev1_/u) });
+    expect(sentEmails).toHaveLength(0);
+    expect(createOtpCalls).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("blocks inactive users without reactivation, OTP, TOTP challenge, or session", async () => {
+    const { startDashboardLogin } = await import("./authFlow");
+    const result = await startDashboardLogin({ email: "ca@applywizz.ai" });
+
+    expect(result).toEqual({ ok: true, nextStep: "email_otp", challengeId: expect.any(String) });
+    expect(sentEmails).toHaveLength(0);
+    expect(createOtpCalls).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("returns the same shape for an unknown external-domain email without sending an OTP", async () => {
+    const { startDashboardLogin } = await import("./authFlow");
+    const result = await startDashboardLogin({ email: "missing@gmail.com" });
+
+    expect(result).toEqual({ ok: true, nextStep: "email_otp", challengeId: expect.any(String) });
+    expect(sentEmails).toHaveLength(0);
+    expect(createOtpCalls).toHaveLength(0);
+  });
+
+  it("blocks a pre-existing active row whose email is no longer policy-eligible", async () => {
+    users.push({
+      id: "user-3",
+      email: "user+test@applywizz.ai",
+      role: "ca",
+      status: "active",
+      totpEnabled: false,
+      totpSecretEncrypted: null,
+    });
+
+    const { startDashboardLogin } = await import("./authFlow");
+    const result = await startDashboardLogin({ email: "user+test@applywizz.ai" });
+
+    expect(result).toEqual({ ok: true, nextStep: "email_otp", challengeId: expect.any(String) });
+    expect(sentEmails).toHaveLength(0);
+    expect(createOtpCalls).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
+    expect(audits.filter((event) => event.eventType === "account_auto_provisioned")).toHaveLength(0);
   });
 
   it("returns the same shape for a throttled active user without sending email", async () => {
@@ -258,20 +455,62 @@ describe("requestDashboardLoginOtp", () => {
       { userId: "user-1", eventType: "login_otp_requested", success: false },
     );
 
-    const { requestDashboardLoginOtp } = await import("./authFlow");
-    const unknown = await requestDashboardLoginOtp({ email: "missing@applywizz.ai" });
-    const disabled = await requestDashboardLoginOtp({ email: "ca@applywizz.ai" });
-    const throttled = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const { startDashboardLogin } = await import("./authFlow");
+    const throttled = await startDashboardLogin({ email: "admin@applywizz.ai" });
 
-    expect(unknown).toHaveProperty("ok", true);
-    expect(disabled).toHaveProperty("ok", true);
-    expect(throttled).toHaveProperty("ok", true);
-    expect(Object.keys(unknown).sort()).toEqual(["ok", "otpId"]);
-    expect(Object.keys(disabled).sort()).toEqual(["ok", "otpId"]);
-    expect(Object.keys(throttled).sort()).toEqual(["ok", "otpId"]);
+    expect(throttled).toEqual({ ok: true, nextStep: "email_otp", challengeId: expect.any(String) });
     expect(otpRequestThrottleChecks).toBe(1);
     expect(sentEmails).toHaveLength(0);
     expect(createOtpCalls).toHaveLength(0);
+  });
+
+  it("does not call email provider when OTP challenge creation fails", async () => {
+    failNextOtpInsert();
+    const { startDashboardLogin } = await import("./authFlow");
+    await expect(startDashboardLogin({ email: "new.ca@applywizz.ai" })).resolves.toEqual({
+      ok: true,
+      nextStep: "email_otp",
+      challengeId: expect.any(String),
+    });
+    expect(sentEmails).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
+    expect(audits).toContainEqual(expect.objectContaining({ eventType: "login_otp_requested", success: false }));
+  });
+
+  it("does not create a second user or provisioning audit after explicit email-provider failure", async () => {
+    failNextOtpEmailSend();
+    const { startDashboardLogin } = await import("./authFlow");
+    const first = await startDashboardLogin({ email: "new.ca@applywizz.ai" });
+    const second = await startDashboardLogin({ email: "new.ca@applywizz.ai" });
+    expect(users.filter((user) => user.email === "new.ca@applywizz.ai")).toHaveLength(1);
+    expect(audits.filter((event) => event.eventType === "account_auto_provisioned")).toHaveLength(1);
+    expect(invalidatedOtps).toHaveLength(1);
+    if (first.nextStep !== "email_otp" || second.nextStep !== "email_otp") throw new Error("expected email_otp");
+    expect(second.challengeId).not.toBe(first.challengeId);
+    expect(sentEmails).toHaveLength(1);
+  });
+
+  it("reuses an active OTP after provider timeout instead of blindly issuing another immediately", async () => {
+    timeoutAfterPotentialProviderAcceptance();
+    const { startDashboardLogin } = await import("./authFlow");
+    const first = await startDashboardLogin({ email: "new.ca@applywizz.ai" });
+    const second = await startDashboardLogin({ email: "new.ca@applywizz.ai" });
+    expect(second).toEqual(first);
+    expect(createOtpCalls).toHaveLength(1);
+  });
+
+  it("fails closed to the generic response when the login-start lock backend is unreachable", async () => {
+    loginStartLockBackendUnreachable = true;
+    const { startDashboardLogin } = await import("./authFlow");
+
+    await expect(startDashboardLogin({ email: "admin@applywizz.ai" })).resolves.toEqual({
+      ok: true,
+      nextStep: "email_otp",
+      challengeId: expect.any(String),
+    });
+    expect(sentEmails).toHaveLength(0);
+    expect(createOtpCalls).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
   });
 });
 
@@ -285,8 +524,8 @@ describe("verifyDashboardLoginOtp", () => {
   it("fails closed when OTP succeeds but the user is missing or disabled on re-check", async () => {
     const { verifyDashboardLoginOtp } = await import("./authFlow");
 
-    otps.push({ id: "otp-missing", userId: "missing-user", rawOtp: "123456", used: false });
-    otps.push({ id: "otp-disabled", userId: "user-2", rawOtp: "123456", used: false });
+    otps.push({ id: "otp-missing", userId: "missing-user", rawOtp: "123456", used: false, invalidated: false });
+    otps.push({ id: "otp-disabled", userId: "user-2", rawOtp: "123456", used: false, invalidated: false });
 
     await expect(verifyDashboardLoginOtp({ otpId: "otp-missing", rawOtp: "123456" })).resolves.toEqual({
       ok: false,
@@ -297,11 +536,12 @@ describe("verifyDashboardLoginOtp", () => {
   });
 
   it("returns a setup challenge for first-time users", async () => {
-    const { requestDashboardLoginOtp, verifyDashboardLoginOtp } = await import("./authFlow");
+    const { startDashboardLogin, verifyDashboardLoginOtp } = await import("./authFlow");
 
-    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const request = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    if (request.nextStep !== "email_otp") throw new Error("expected email OTP stage");
     const otp = sentEmails[0].otp;
-    const verify = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+    const verify = await verifyDashboardLoginOtp({ otpId: request.challengeId, rawOtp: otp });
 
     expect(verify.ok).toBe(true);
     if (verify.ok) {
@@ -314,14 +554,15 @@ describe("verifyDashboardLoginOtp", () => {
     }
   });
 
-  it("returns a login challenge for returning users", async () => {
-    const { requestDashboardLoginOtp, verifyDashboardLoginOtp } = await import("./authFlow");
+  it("returns a login challenge for an already-enabled user's email OTP as a defensive fallback", async () => {
+    const { verifyDashboardLoginOtp } = await import("./authFlow");
+    const { createDashboardEmailOtp } = await import("./otpStore");
 
     users[0].totpEnabled = true;
     users[0].totpSecretEncrypted = "encrypted-secret";
-    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
-    const otp = sentEmails[0].otp;
-    const verify = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+    const created = await createDashboardEmailOtp({ userId: "user-1", rawOtp: "123456" });
+    if (!created.ok) throw new Error("expected otp creation");
+    const verify = await verifyDashboardLoginOtp({ otpId: created.otpId, rawOtp: "123456" });
 
     expect(verify).toEqual({
       ok: true,
@@ -338,13 +579,14 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
+    const { startDashboardLogin, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
       await import("./authFlow");
     const { decryptTotpSecret } = await import("./totp");
 
-    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const request = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    if (request.nextStep !== "email_otp") throw new Error("expected email OTP stage");
     const rawOtp = sentEmails[0].otp;
-    const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp });
+    const verification = await verifyDashboardLoginOtp({ otpId: request.challengeId, rawOtp });
 
     if (!verification.ok) throw new Error("expected TOTP setup stage");
     expect(verification.challenge).toMatch(/^loginchallengev1_/u);
@@ -370,14 +612,14 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     expect(storedSecret).not.toBe(verification.totpSecret);
     expect(storedSecret && decryptTotpSecret(storedSecret)).toBe(verification.totpSecret);
 
-    const enabledRequest = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
-    const enabledOtp = sentEmails.at(-1)?.otp ?? "";
-    const loginVerification = await verifyDashboardLoginOtp({ otpId: enabledRequest.otpId, rawOtp: enabledOtp });
-    if (!loginVerification.ok) throw new Error("expected TOTP login stage");
-    expect(loginVerification.challenge).toMatch(/^loginchallengev1_/u);
+    const emailsAfterSetup = sentEmails.length;
+    const loginStart = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    expect(loginStart).toEqual({ ok: true, nextStep: "totp", challenge: expect.stringMatching(/^loginchallengev1_/u) });
+    expect(sentEmails).toHaveLength(emailsAfterSetup);
+    if (loginStart.nextStep !== "totp") throw new Error("expected TOTP login stage");
 
     const loginCode = referenceTotp(verification.totpSecret, TEST_TIME);
-    const login = await verifyDashboardLoginTotp({ challenge: loginVerification.challenge, code: loginCode });
+    const login = await verifyDashboardLoginTotp({ challenge: loginStart.challenge, code: loginCode });
     expect(login.ok).toBe(true);
     if (login.ok) {
       expect(login.sessionToken).toMatch(SESSION_TOKEN_REGEX);
@@ -399,14 +641,15 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     warnSpy.mockRestore();
   });
 
-  it("returning login preserves totp_enabled and the existing secret and still requires an email OTP", async () => {
-    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
+  it("returning login preserves totp_enabled and the existing secret and skips email OTP entirely", async () => {
+    const { startDashboardLogin, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
       await import("./authFlow");
 
     // 1. First-time registration.
-    const setupRequest = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const setupRequest = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    if (setupRequest.nextStep !== "email_otp") throw new Error("expected email OTP stage");
     const setupOtp = sentEmails.at(-1)?.otp ?? "";
-    const setupVerify = await verifyDashboardLoginOtp({ otpId: setupRequest.otpId, rawOtp: setupOtp });
+    const setupVerify = await verifyDashboardLoginOtp({ otpId: setupRequest.challengeId, rawOtp: setupOtp });
     if (!setupVerify.ok || setupVerify.stage !== "totp_setup_required") throw new Error("expected setup stage");
     const secret = setupVerify.totpSecret;
     const setup = await completeDashboardTotpSetup({ challenge: setupVerify.challenge, code: referenceTotp(secret, TEST_TIME) });
@@ -419,24 +662,21 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const emailsAfterSetup = sentEmails.length;
     expect(storedAfterSetup).toBeTruthy();
 
-    // 4/5. A fresh login still sends and requires a NEW email OTP.
-    const loginRequest = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
-    expect(sentEmails.length).toBe(emailsAfterSetup + 1);
-    const loginOtp = sentEmails.at(-1)?.otp ?? "";
-    const loginVerify = await verifyDashboardLoginOtp({ otpId: loginRequest.otpId, rawOtp: loginOtp });
+    // 4/5. A fresh login for a returning authenticator user skips email OTP entirely.
+    const loginStart = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    expect(sentEmails.length).toBe(emailsAfterSetup);
 
-    // 6/7. The returning user goes to the authenticator-login stage, not setup:
-    // no new secret, no provisioning URI.
-    expect(loginVerify).toEqual({
+    // 6/7. The returning user goes straight to the authenticator-login stage:
+    // no new secret, no provisioning URI, no email OTP round trip.
+    expect(loginStart).toEqual({
       ok: true,
-      stage: "totp_required",
-      userId: "user-1",
+      nextStep: "totp",
       challenge: expect.stringMatching(/^loginchallengev1_/u),
     });
-    if (!loginVerify.ok) throw new Error("expected login stage");
+    if (loginStart.nextStep !== "totp") throw new Error("expected login stage");
 
     // 8/9. The existing authenticator secret authenticates and mints a session.
-    const login = await verifyDashboardLoginTotp({ challenge: loginVerify.challenge, code: referenceTotp(secret, TEST_TIME) });
+    const login = await verifyDashboardLoginTotp({ challenge: loginStart.challenge, code: referenceTotp(secret, TEST_TIME) });
     expect(login.ok).toBe(true);
 
     // 2/3 preserved: no re-registration occurred during login.
@@ -477,12 +717,13 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
   });
 
   it("locks out setup after repeated failures and keeps locking out correct codes", async () => {
-    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup } =
+    const { startDashboardLogin, verifyDashboardLoginOtp, completeDashboardTotpSetup } =
       await import("./authFlow");
 
-    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const request = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    if (request.nextStep !== "email_otp") throw new Error("expected email OTP stage");
     const otp = sentEmails[0].otp;
-    const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+    const verification = await verifyDashboardLoginOtp({ otpId: request.challengeId, rawOtp: otp });
 
     if (!verification.ok) throw new Error("expected TOTP setup stage");
     expect(verification.challenge).toMatch(/^loginchallengev1_/u);
@@ -511,12 +752,13 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
   });
 
   it("locks out TOTP login after repeated failures and keeps locking out correct codes", async () => {
-    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
+    const { startDashboardLogin, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
       await import("./authFlow");
 
-    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const request = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    if (request.nextStep !== "email_otp") throw new Error("expected email OTP stage");
     const otp = sentEmails[0].otp;
-    const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+    const verification = await verifyDashboardLoginOtp({ otpId: request.challengeId, rawOtp: otp });
 
     if (!verification.ok) throw new Error("expected TOTP setup stage");
     expect(verification.challenge).toMatch(/^loginchallengev1_/u);
@@ -531,17 +773,14 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const storedSecret = users[0].totpSecretEncrypted;
     if (!storedSecret) throw new Error("expected stored secret");
 
-    const enabledRequest = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
-    const enabledOtp = sentEmails.at(-1)?.otp ?? "";
-    const loginVerification = await verifyDashboardLoginOtp({ otpId: enabledRequest.otpId, rawOtp: enabledOtp });
-    if (!loginVerification.ok) throw new Error("expected TOTP login stage");
-    expect(loginVerification.challenge).toMatch(/^loginchallengev1_/u);
+    const loginStart = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    if (loginStart.nextStep !== "totp") throw new Error("expected TOTP login stage");
 
     const wrongCode = "000000";
     for (let i = 0; i < 5; i++) {
       await expect(
         verifyDashboardLoginTotp({
-          challenge: loginVerification.challenge,
+          challenge: loginStart.challenge,
           code: wrongCode,
           ip: "198.51.100.2",
           userAgent: "login-test",
@@ -552,7 +791,7 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
     const correctCode = referenceTotp(verification.totpSecret, TEST_TIME);
     await expect(
       verifyDashboardLoginTotp({
-        challenge: loginVerification.challenge,
+        challenge: loginStart.challenge,
         code: correctCode,
         ip: "198.51.100.2",
         userAgent: "login-test",
@@ -601,13 +840,14 @@ describe("completeDashboardTotpSetup and verifyDashboardLoginTotp", () => {
   });
 
   it("rejects forged, tampered, and wrong-stage challenges", async () => {
-    const { requestDashboardLoginOtp, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
+    const { startDashboardLogin, verifyDashboardLoginOtp, completeDashboardTotpSetup, verifyDashboardLoginTotp } =
       await import("./authFlow");
     const { issueDashboardLoginChallenge } = await import("./loginChallenge");
 
-    const request = await requestDashboardLoginOtp({ email: "admin@applywizz.ai" });
+    const request = await startDashboardLogin({ email: "admin@applywizz.ai" });
+    if (request.nextStep !== "email_otp") throw new Error("expected email OTP stage");
     const otp = sentEmails[0].otp;
-    const verification = await verifyDashboardLoginOtp({ otpId: request.otpId, rawOtp: otp });
+    const verification = await verifyDashboardLoginOtp({ otpId: request.challengeId, rawOtp: otp });
     if (!verification.ok) throw new Error("expected setup challenge");
 
     const loginChallenge = issueDashboardLoginChallenge({ userId: verification.userId, stage: "totp_login" });

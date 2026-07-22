@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { requestDashboardLoginOtp } from "@/lib/dashboardAuth/authFlow";
+import { startDashboardLogin } from "@/lib/dashboardAuth/authFlow";
 import { requireDashboardBasicAuth } from "../_lib/basicAuthGate";
 import { extractRequestContext } from "../_lib/requestContext";
 
@@ -54,13 +54,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const { ip, userAgent } = extractRequestContext(request);
-    const result = await requestDashboardLoginOtp({ email, ip, userAgent });
+    const result = await startDashboardLogin({ email, ip, userAgent });
 
-    if (!result.ok) {
-      return invalidResponse();
-    }
-
-    return NextResponse.json({ ok: true, otpId: result.otpId }, { status: 200 });
+    return NextResponse.json(result, { status: 200 });
   } catch {
     return invalidResponse();
   }

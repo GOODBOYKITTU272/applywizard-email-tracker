@@ -29,6 +29,10 @@ interface OtpRow {
 
 interface SelectChain {
   eq(column: string, value: string): SelectChain;
+  is(column: string, value: null): SelectChain;
+  gt(column: string, value: string): SelectChain;
+  order(column: string, options?: { ascending?: boolean }): SelectChain;
+  limit(n: number): SelectChain;
   maybeSingle(): Promise<{ data: Record<string, unknown> | null; error: { message: string } | null }>;
 }
 
@@ -151,5 +155,42 @@ export async function verifyDashboardEmailOtp(params: {
     return { ok: true, userId: row.user_id };
   } catch {
     return { ok: false, reason: "query_error" };
+  }
+}
+
+export async function getLatestUsableDashboardEmailOtp(
+  userId: string,
+): Promise<{ ok: true; challengeId: string; expiresAt: string } | { ok: false }> {
+  try {
+    const supabase = createSupabaseServiceRoleClient() as unknown as SupabaseLike;
+    const { data, error } = await supabase
+      .from("dashboard_email_otps")
+      .select("id, expires_at")
+      .eq("user_id", userId)
+      .is("used_at", null)
+      .eq("attempt_count", "0")
+      .gt("expires_at", nowIso())
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) return { ok: false };
+    return { ok: true, challengeId: data.id as string, expiresAt: data.expires_at as string };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function invalidateDashboardEmailOtp(otpId: string): Promise<{ ok: true } | { ok: false }> {
+  try {
+    const supabase = createSupabaseServiceRoleClient() as unknown as SupabaseLike;
+    const { error } = await supabase
+      .from("dashboard_email_otps")
+      .update({ used_at: nowIso() })
+      .eq("id", otpId)
+      .is("used_at", null);
+    return error ? { ok: false } : { ok: true };
+  } catch {
+    return { ok: false };
   }
 }

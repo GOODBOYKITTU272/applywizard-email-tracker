@@ -53,14 +53,16 @@ export async function getMicrosoftGraphAccessToken(): Promise<MicrosoftGraphToke
   }
 }
 
-export type SendDashboardOtpEmailResult = { ok: true } | { ok: false };
+export type SendDashboardOtpEmailResult =
+  | { ok: true }
+  | { ok: false; reason: "explicit_failure" | "timeout_or_unknown" };
 
 export async function sendDashboardOtpEmail(params: { to: string; otp: string }): Promise<SendDashboardOtpEmailResult> {
   const fromEmail = getMicrosoftGraphFromEmail();
-  if (!fromEmail) return { ok: false };
+  if (!fromEmail) return { ok: false, reason: "explicit_failure" };
 
   const tokenResult = await getMicrosoftGraphAccessToken();
-  if (!tokenResult.ok) return { ok: false };
+  if (!tokenResult.ok) return { ok: false, reason: "explicit_failure" };
 
   try {
     const response = await fetch(`https://graph.microsoft.com/v1.0/users/${encodeURIComponent(fromEmail)}/sendMail`, {
@@ -82,10 +84,10 @@ export async function sendDashboardOtpEmail(params: { to: string; otp: string })
       }),
     });
 
-    if (!response.ok) return { ok: false };
+    if (!response.ok) return { ok: false, reason: "explicit_failure" };
 
     return { ok: true };
   } catch {
-    return { ok: false };
+    return { ok: false, reason: "timeout_or_unknown" };
   }
 }

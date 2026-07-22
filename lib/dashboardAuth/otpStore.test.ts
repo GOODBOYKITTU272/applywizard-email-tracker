@@ -12,7 +12,19 @@ let otpSelectResult: MaybeSingleResult;
 let updateResult: UpdateResult;
 
 interface CallRecord {
-  type: "insert" | "insert.select" | "select" | "select.eq" | "update" | "update.eq" | "update.is" | "update.select";
+  type:
+    | "insert"
+    | "insert.select"
+    | "select"
+    | "select.eq"
+    | "select.is"
+    | "select.gt"
+    | "select.order"
+    | "select.limit"
+    | "update"
+    | "update.eq"
+    | "update.is"
+    | "update.select";
   table: string;
   payload?: Row;
   columns?: string;
@@ -21,6 +33,25 @@ interface CallRecord {
 }
 
 let calls: CallRecord[];
+
+type SeedOtpRow = {
+  id: string;
+  user_id: string;
+  expires_at: string;
+  used_at: string | null;
+  attempt_count: number;
+  created_at?: string;
+};
+
+let otpRows: SeedOtpRow[];
+
+function seedOtpRows(rows: SeedOtpRow[]): void {
+  otpRows = rows;
+}
+
+function getOtpRow(id: string): SeedOtpRow | undefined {
+  return otpRows.find((row) => row.id === id);
+}
 
 vi.mock("@/lib/supabase/serviceRole", () => ({
   createSupabaseServiceRoleClient: () => ({
@@ -38,24 +69,78 @@ vi.mock("@/lib/supabase/serviceRole", () => ({
       },
       select: (columns: string) => {
         calls.push({ type: "select", table, columns });
+        const filters: { id?: string; user_id?: string; attempt_count?: string; expiresAfter?: string } = {};
+        let usedAtIsNull = false;
+        let ordered = false;
+        let limitN: number | null = null;
         const chain = {
           eq: (column: string, value: string) => {
             calls.push({ type: "select.eq", table, column, value });
+            if (column === "id") filters.id = value;
+            if (column === "user_id") filters.user_id = value;
+            if (column === "attempt_count") filters.attempt_count = value;
             return chain;
           },
-          maybeSingle: async () => otpSelectResult,
+          is: (column: string, value: null) => {
+            calls.push({ type: "select.is", table, column, value: String(value) });
+            if (column === "used_at" && value === null) usedAtIsNull = true;
+            return chain;
+          },
+          gt: (column: string, value: string) => {
+            calls.push({ type: "select.gt", table, column, value });
+            if (column === "expires_at") filters.expiresAfter = value;
+            return chain;
+          },
+          order: (column: string) => {
+            calls.push({ type: "select.order", table, column });
+            ordered = true;
+            return chain;
+          },
+          limit: (n: number) => {
+            calls.push({ type: "select.limit", table, value: String(n) });
+            limitN = n;
+            return chain;
+          },
+          maybeSingle: async () => {
+            if (filters.id !== undefined) return otpSelectResult;
+
+            let rows = otpRows.filter((row) => {
+              if (filters.user_id !== undefined && row.user_id !== filters.user_id) return false;
+              if (usedAtIsNull && row.used_at !== null) return false;
+              if (filters.attempt_count !== undefined && String(row.attempt_count) !== filters.attempt_count) return false;
+              if (
+                filters.expiresAfter !== undefined &&
+                !(new Date(row.expires_at).getTime() > new Date(filters.expiresAfter).getTime())
+              )
+                return false;
+              return true;
+            });
+
+            if (ordered) {
+              rows = [...rows].sort(
+                (a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime(),
+              );
+            }
+            if (limitN !== null) rows = rows.slice(0, limitN);
+
+            return { data: rows[0] ?? null, error: null };
+          },
         };
         return chain;
       },
       update: (payload: Row) => {
         calls.push({ type: "update", table, payload });
+        let filterId: string | undefined;
+        let requireUsedAtNull = false;
         const chain = {
           eq: (column: string, value: string) => {
             calls.push({ type: "update.eq", table, column, value });
+            if (column === "id") filterId = value;
             return chain;
           },
           is: (column: string, value: null) => {
             calls.push({ type: "update.is", table, column, value: String(value) });
+            if (column === "used_at" && value === null) requireUsedAtNull = true;
             return chain;
           },
           select: (columns: string) => {
@@ -64,7 +149,13 @@ vi.mock("@/lib/supabase/serviceRole", () => ({
               maybeSingle: async () => updateResult,
             };
           },
-          then: (resolve: (value: UpdateResult) => void) => resolve(updateResult),
+          then: (resolve: (value: { error: { message: string } | null }) => void) => {
+            const row = otpRows.find((r) => r.id === filterId);
+            if (row && (!requireUsedAtNull || row.used_at === null)) {
+              Object.assign(row, payload);
+            }
+            resolve({ error: null });
+          },
         };
         return chain;
       },
@@ -94,7 +185,16 @@ beforeEach(() => {
   };
   otpSelectResult = { data: null, error: null };
   updateResult = { data: { id: OTP_ID }, error: null };
+  otpRows = [];
 });
+
+function futureIso(hours: number): string {
+  return new Date(NOW.getTime() + hours * 60 * 60 * 1000).toISOString();
+}
+
+function pastIso(hours: number): string {
+  return new Date(NOW.getTime() - hours * 60 * 60 * 1000).toISOString();
+}
 
 describe("createDashboardEmailOtp", () => {
   it("stores only the hashed OTP with a 10 minute expiry", async () => {
@@ -277,5 +377,42 @@ describe("verifyDashboardEmailOtp", () => {
       ok: false,
       reason: "query_error",
     });
+  });
+});
+
+describe("getLatestUsableDashboardEmailOtp", () => {
+  it("returns the newest unexpired unused zero-attempt OTP for a user", async () => {
+    seedOtpRows([
+      { id: "old", user_id: USER_ID, expires_at: futureIso(2), used_at: null, attempt_count: 0, created_at: pastIso(2) },
+      { id: "new", user_id: USER_ID, expires_at: futureIso(8), used_at: null, attempt_count: 0, created_at: pastIso(1) },
+    ]);
+
+    const { getLatestUsableDashboardEmailOtp } = await import("./otpStore");
+    await expect(getLatestUsableDashboardEmailOtp(USER_ID)).resolves.toEqual({
+      ok: true,
+      challengeId: "new",
+      expiresAt: expect.any(String),
+    });
+  });
+
+  it("ignores used, expired, attempted, and other-user OTP rows", async () => {
+    seedOtpRows([
+      { id: "used", user_id: USER_ID, expires_at: futureIso(8), used_at: NOW.toISOString(), attempt_count: 0 },
+      { id: "expired", user_id: USER_ID, expires_at: pastIso(1), used_at: null, attempt_count: 0 },
+      { id: "attempted", user_id: USER_ID, expires_at: futureIso(8), used_at: null, attempt_count: 1 },
+      { id: "other", user_id: "other-user", expires_at: futureIso(8), used_at: null, attempt_count: 0 },
+    ]);
+
+    const { getLatestUsableDashboardEmailOtp } = await import("./otpStore");
+    await expect(getLatestUsableDashboardEmailOtp(USER_ID)).resolves.toEqual({ ok: false });
+  });
+});
+
+describe("invalidateDashboardEmailOtp", () => {
+  it("invalidates an OTP by marking it used", async () => {
+    seedOtpRows([{ id: "otp-1", user_id: USER_ID, expires_at: futureIso(8), used_at: null, attempt_count: 0 }]);
+    const { invalidateDashboardEmailOtp } = await import("./otpStore");
+    await expect(invalidateDashboardEmailOtp("otp-1")).resolves.toEqual({ ok: true });
+    expect(getOtpRow("otp-1")?.used_at).toEqual(expect.any(String));
   });
 });

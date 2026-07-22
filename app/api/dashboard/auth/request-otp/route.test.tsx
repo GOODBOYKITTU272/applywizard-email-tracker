@@ -1,11 +1,11 @@
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const requestDashboardLoginOtp = vi.fn();
+const startDashboardLogin = vi.fn();
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/dashboardAuth/authFlow", () => ({
-  requestDashboardLoginOtp,
+  startDashboardLogin,
 }));
 
 function basicAuth(username: string, password: string): string {
@@ -27,8 +27,8 @@ const previousSecret = process.env.DASHBOARD_SECRET;
 
 beforeEach(() => {
   process.env.DASHBOARD_SECRET = "test-dashboard-secret";
-  requestDashboardLoginOtp.mockReset();
-  requestDashboardLoginOtp.mockResolvedValue({ ok: true, otpId: "otp-123" });
+  startDashboardLogin.mockReset();
+  startDashboardLogin.mockResolvedValue({ ok: true, nextStep: "email_otp", challengeId: "otp-123" });
 });
 
 afterEach(() => {
@@ -43,11 +43,11 @@ describe("POST /api/dashboard/auth/request-otp", () => {
     const res = await POST(makeRequest(JSON.stringify({ email: "user@applywizz.ai" })));
 
     expect(res.status).toBe(401);
-    expect(requestDashboardLoginOtp).not.toHaveBeenCalled();
+    expect(startDashboardLogin).not.toHaveBeenCalled();
     expect(res.headers.get("WWW-Authenticate")).toBe('Basic realm="ApplyWizard Dashboard"');
   });
 
-  it("returns 200 and calls requestDashboardLoginOtp with trimmed email and request context", async () => {
+  it("returns 200 and calls startDashboardLogin with trimmed email and request context", async () => {
     const { POST } = await import("./route");
     const res = await POST(
       makeRequest(
@@ -61,20 +61,33 @@ describe("POST /api/dashboard/auth/request-otp", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, otpId: "otp-123" });
-    expect(requestDashboardLoginOtp).toHaveBeenCalledWith({
+    expect(await res.json()).toEqual({ ok: true, nextStep: "email_otp", challengeId: "otp-123" });
+    expect(startDashboardLogin).toHaveBeenCalledWith({
       email: "user@applywizz.ai",
       ip: "203.0.113.10",
       userAgent: "ApplyWizz Browser",
     });
   });
 
+  it("returns the totp response shape for a returning authenticator user", async () => {
+    startDashboardLogin.mockResolvedValueOnce({ ok: true, nextStep: "totp", challenge: "loginchallengev1_token" });
+    const { POST } = await import("./route");
+    const res = await POST(
+      makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {
+        authorization: basicAuth("admin", "test-dashboard-secret"),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, nextStep: "totp", challenge: "loginchallengev1_token" });
+  });
+
   it.each([
-    ["unknown email", { ok: true, otpId: "otp-unknown" }],
-    ["disabled user", { ok: true, otpId: "otp-disabled" }],
-    ["throttled active user", { ok: true, otpId: "otp-throttled" }],
+    ["unknown email", { ok: true, nextStep: "email_otp", challengeId: "otp-unknown" }],
+    ["disabled user", { ok: true, nextStep: "email_otp", challengeId: "otp-disabled" }],
+    ["throttled active user", { ok: true, nextStep: "email_otp", challengeId: "otp-throttled" }],
   ])("keeps the same generic response shape for %s", async (_label, response) => {
-    requestDashboardLoginOtp.mockResolvedValueOnce(response);
+    startDashboardLogin.mockResolvedValueOnce(response);
     const { POST } = await import("./route");
     const res = await POST(
       makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {
@@ -113,7 +126,7 @@ describe("POST /api/dashboard/auth/request-otp", () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ ok: false });
-    expect(requestDashboardLoginOtp).not.toHaveBeenCalled();
+    expect(startDashboardLogin).not.toHaveBeenCalled();
   });
 
   it("rejects oversized request bodies before parsing", async () => {
@@ -126,11 +139,11 @@ describe("POST /api/dashboard/auth/request-otp", () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ ok: false });
-    expect(requestDashboardLoginOtp).not.toHaveBeenCalled();
+    expect(startDashboardLogin).not.toHaveBeenCalled();
   });
 
   it("returns 400 on unexpected exceptions", async () => {
-    requestDashboardLoginOtp.mockRejectedValueOnce(new Error("boom"));
+    startDashboardLogin.mockRejectedValueOnce(new Error("boom"));
     const { POST } = await import("./route");
     const res = await POST(
       makeRequest(JSON.stringify({ email: "user@applywizz.ai" }), {

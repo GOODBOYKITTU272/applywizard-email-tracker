@@ -7,7 +7,10 @@ import { IconArrowRight, IconCheck, IconMail, IconRefresh, IconWarning } from "@
 
 type AuthStep = "email" | "otp" | "setup" | "login";
 
-type RequestOtpResponse = { ok: true; otpId: string } | { ok: false };
+type RequestOtpResponse =
+  | { ok: true; nextStep: "email_otp"; challengeId: string }
+  | { ok: true; nextStep: "totp"; challenge: string }
+  | { ok: false };
 type VerifyOtpResponse =
   | {
       ok: true;
@@ -279,7 +282,17 @@ export function DashboardAuthClient() {
         return;
       }
 
-      setOtpId(requestData.otpId);
+      if (requestData.nextStep === "totp") {
+        setChallenge(requestData.challenge);
+        setOtpId("");
+        setOtp("");
+        setSetupCode("");
+        setLoginCode("");
+        setStep("login");
+        return;
+      }
+
+      setOtpId(requestData.challengeId);
       setOtp("");
       setSetupCode("");
       setLoginCode("");
@@ -407,7 +420,6 @@ export function DashboardAuthClient() {
               <h1 className="dashboard-auth-title">Sign in</h1>
             </div>
           </div>
-          <p className="dashboard-auth-subtitle">Approved staff only.</p>
         </header>
 
         <section className="dashboard-auth-steps" aria-label="Authentication steps">
