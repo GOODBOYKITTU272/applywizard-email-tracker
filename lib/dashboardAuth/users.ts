@@ -2,6 +2,7 @@ import "server-only";
 
 import { createSupabaseServiceRoleClient } from "@/lib/supabase/serviceRole";
 import { normalizeEmail } from "@/lib/dashboardAuth/email";
+import { resolveAutoProvisionRole } from "@/lib/dashboardAuth/roles";
 
 export type DashboardRole = "admin_ceo" | "manager_ops" | "ca";
 export type DashboardUserStatus = "active" | "disabled";
@@ -44,10 +45,17 @@ interface UpdateChain {
   };
 }
 
+interface InsertChain {
+  select(columns: string): {
+    maybeSingle(): Promise<{ data: DashboardUserRow | null; error: { code?: string; message: string } | null }>;
+  };
+}
+
 interface SupabaseLike {
   from(table: string): {
     select(columns: string): SelectChain;
     update(payload: Record<string, unknown>): UpdateChain;
+    insert(payload: Record<string, unknown>): InsertChain;
   };
 }
 
@@ -146,5 +154,44 @@ export async function setDashboardUserTotpSecret(params: {
     return { ok: true };
   } catch {
     return { ok: false };
+  }
+}
+
+export type DashboardUserForLoginResult =
+  | { user: DashboardUser; created: boolean }
+  | null;
+
+/**
+ * Returns the existing dashboard user for this email, or auto-creates one
+ * for an eligible @applywizz.ai address. Never changes the role or status
+ * of an existing row — auto-provisioning only ever fires when no row exists.
+ */
+export async function getOrCreateDashboardUserForLogin(email: string): Promise<DashboardUserForLoginResult> {
+  const existing = await getDashboardUserByEmail(email);
+  if (existing) return { user: existing, created: false };
+
+  const decision = resolveAutoProvisionRole(email);
+  if (!decision.eligible) return null;
+
+  try {
+    const supabase = createSupabaseServiceRoleClient() as unknown as SupabaseLike;
+    const { data, error } = await supabase
+      .from("dashboard_users")
+      .insert({ email: decision.email, role: decision.role, status: "active" })
+      .select("id, email, role, status, totp_enabled")
+      .maybeSingle();
+
+    if (!error && data) return { user: mapUserRow(data), created: true };
+
+    // Two logins racing to create the same email hit the unique constraint —
+    // the loser re-fetches the winner's row instead of failing the login.
+    if (error?.code === "23505") {
+      const racedUser = await getDashboardUserByEmail(decision.email);
+      return racedUser ? { user: racedUser, created: false } : null;
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
