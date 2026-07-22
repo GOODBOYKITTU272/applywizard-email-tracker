@@ -560,7 +560,11 @@ describe("getOverviewDashboardData", () => {
   });
 
   it("does not expose CA Portfolio in the operations navigation source", () => {
-    const layout = readFileSync(resolve(__dirname, "../../app/(operations)/layout.tsx"), "utf8");
+    // The nav links now live in the client shell the server layout renders.
+    const layout = readFileSync(
+      resolve(__dirname, "../../components/operations/operations-shell-client.tsx"),
+      "utf8",
+    );
     expect(layout).not.toContain("CA Portfolio");
     expect(layout).not.toContain("IconCAPortfolio");
   });

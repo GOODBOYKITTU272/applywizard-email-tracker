@@ -422,13 +422,22 @@ describe("cooWorkspace", () => {
   });
 
   it("navigation keeps CA Portfolio hidden from the live COO shell", () => {
-    const layout = readFileSync(resolve(__dirname, "../../app/(operations)/layout.tsx"), "utf8");
+    // The nav links now live in the client shell the server layout renders.
+    const layout = readFileSync(
+      resolve(__dirname, "../../components/operations/operations-shell-client.tsx"),
+      "utf8",
+    );
     expect(layout).not.toContain("CA Portfolio");
     expect(layout).not.toContain("IconCAPortfolio");
   });
 
   it("keeps mobile card stats styling in the shared COO page styles only", () => {
-    const layout = readFileSync(resolve(__dirname, "../../app/(operations)/layout.tsx"), "utf8");
+    // The shell's <style jsx global> now lives in the client shell the server
+    // layout renders, not in the layout file itself.
+    const layout = readFileSync(
+      resolve(__dirname, "../../components/operations/operations-shell-client.tsx"),
+      "utf8",
+    );
     const styles = readFileSync(resolve(__dirname, "../../components/coo-page-styles.tsx"), "utf8");
     expect(layout).not.toContain(".coo-mobile-card__stats");
     expect(styles.match(/\.coo-mobile-card__stats/g)).toHaveLength(1);

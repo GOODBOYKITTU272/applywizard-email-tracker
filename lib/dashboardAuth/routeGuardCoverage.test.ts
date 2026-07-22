@@ -47,10 +47,15 @@ describe("dashboard session route guard coverage", () => {
     expect(source).toContain("requireDashboardSession()");
   });
 
-  it("does not rely on the operations layout as the sole guard", () => {
+  it("also guards at the operations layout, in addition to each page's own check", () => {
+    // The layout now calls requireDashboardSession() too (defense-in-depth,
+    // and the source of the real signed-in identity for the sidebar), but
+    // this is additive: every page above still carries its own guard, so no
+    // route depends on the layout as its *sole* protection.
     const source = read("app/(operations)/layout.tsx");
 
-    expect(source).not.toContain("requireDashboardSession");
+    expect(source).toContain("@/lib/dashboardAuth/requireDashboardSession");
+    expect(source).toContain("requireDashboardSession()");
   });
 
   it("keeps middleware free of server-only session validation imports", () => {
@@ -62,7 +67,10 @@ describe("dashboard session route guard coverage", () => {
   });
 
   it("adds a hard-navigation logout action to the operations shell", () => {
-    const source = read("app/(operations)/layout.tsx");
+    // The logout button and its handler live in the client shell that the
+    // server layout renders (components/operations/operations-shell-client.tsx),
+    // not in the layout file itself.
+    const source = read("components/operations/operations-shell-client.tsx");
 
     expect(source).toContain("/api/dashboard/auth/logout");
     expect(source).toContain("window.location.assign");

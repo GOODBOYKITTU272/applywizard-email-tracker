@@ -29,7 +29,9 @@ describe("worker core contracts", () => {
     const clientFiles = [
       "components/coo.tsx",
       "components/coo-page-styles.tsx",
-      "app/(operations)/layout.tsx",
+      // The operations layout is now a server component; the actual
+      // "use client" shell that must avoid worker-core imports is this one.
+      "components/operations/operations-shell-client.tsx",
     ].map(read).join("\n");
     expect(clientFiles).not.toContain("worker-core");
   });
