@@ -1,6 +1,6 @@
 "use client";
 
-import { type ChangeEvent, type FormEvent, useRef, useState } from "react";
+import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { QRCodeSVG } from "qrcode.react";
 import { IconArrowRight, IconCheck, IconMail, IconRefresh, IconWarning } from "@/components/icons";
@@ -15,7 +15,7 @@ import { IconArrowRight, IconCheck, IconMail, IconRefresh, IconWarning } from "@
 // font stack gives the same branded look without that hard runtime dependency.
 const BRAND_FONT_STACK = '"Noto Sans", system-ui, -apple-system, sans-serif';
 
-type AuthStep = "email" | "otp" | "setup" | "login";
+type AuthStep = "email" | "otp" | "setup" | "login" | "success";
 
 type RequestOtpResponse =
   | { ok: true; nextStep: "email_otp"; challengeId: string }
@@ -49,6 +49,39 @@ export function shouldShowSetupProgress(step: AuthStep): boolean {
 
 function sanitizeNumeric(value: string, maxLength: number): string {
   return value.replace(/\D/g, "").slice(0, maxLength);
+}
+
+// Exported for the same reason as shouldShowSetupProgress above: this repo's
+// vitest "node" environment has no DOM/event-simulation library, so masking
+// is verified directly against the pure function rather than by typing an
+// email into a rendered input and reading it back off the OTP step.
+export function maskEmail(value: string): string {
+  const [local, domain] = value.split("@");
+  if (!local || !domain) return value;
+  if (local.length <= 2) return `${local[0] ?? ""}***@${domain}`;
+  return `${local[0]}${"*".repeat(local.length - 2)}${local[local.length - 1]}@${domain}`;
+}
+
+// Exported so the countdown decrement (and its floor at zero) is directly
+// unit-testable without needing to render the component and let a real
+// setInterval tick, which the "node" vitest environment cannot drive.
+export function nextResendSeconds(seconds: number): number {
+  return Math.max(0, seconds - 1);
+}
+
+// Exported so the actual redirect-after-success side effect used by both
+// handleCompleteSetup and handleLogin is unit-testable with
+// vi.useFakeTimers() directly, since driving the full form-submit ->
+// success-screen -> timer-elapses flow through a rendered component is not
+// possible without @testing-library/react + jsdom (not installed here).
+export function scheduleSuccessRedirect(
+  router: { replace: (href: string) => void; refresh: () => void },
+  delayMs = 800,
+): ReturnType<typeof setTimeout> {
+  return setTimeout(() => {
+    router.replace("/");
+    router.refresh();
+  }, delayMs);
 }
 
 async function postJson<T>(path: string, payload: unknown): Promise<{ ok: boolean; data: T | null }> {
@@ -191,6 +224,88 @@ export function AuthenticatorSetup({
   );
 }
 
+// Extracted (mirroring AuthenticatorSetup above) so the masked-email display
+// and resend-countdown gating can be rendered with renderToStaticMarkup and
+// arbitrary props, instead of requiring a real "type an email, click Send
+// OTP" interaction that this repo's test environment cannot simulate.
+export function OtpVerificationStep({
+  submittedEmail,
+  resendSecondsLeft,
+  otp,
+  busy,
+  onCodeChange,
+  onSubmit,
+  onReset,
+  onResend,
+}: {
+  submittedEmail: string;
+  resendSecondsLeft: number;
+  otp: string;
+  busy: boolean;
+  onCodeChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onReset: () => void;
+  onResend: () => void;
+}) {
+  return (
+    <form className="dashboard-auth-form" onSubmit={onSubmit}>
+      <h2 className="dashboard-auth-step-heading">Verify the email code</h2>
+      <p className="dashboard-auth-masked-email">
+        We sent a 6-digit verification code to your ApplyWizz email.
+        <br />
+        <strong>{maskEmail(submittedEmail)}</strong>
+      </p>
+      <label className="dashboard-auth-field">
+        <span>6-digit OTP</span>
+        <input
+          data-testid="dashboard-auth-otp"
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          value={otp}
+          onChange={onCodeChange}
+          placeholder="123456"
+          maxLength={6}
+          required
+        />
+      </label>
+      <button
+        type="button"
+        className="dashboard-auth-link-button"
+        data-testid="dashboard-auth-resend"
+        disabled={resendSecondsLeft > 0 || busy}
+        onClick={onResend}
+      >
+        {resendSecondsLeft > 0 ? `Resend in 00:${String(resendSecondsLeft).padStart(2, "0")}` : "Resend code"}
+      </button>
+      <div className="dashboard-auth-actions">
+        <button type="button" className="dashboard-auth-button dashboard-auth-button--ghost" onClick={onReset} disabled={busy}>
+          <IconRefresh size={16} />
+          Use another email
+        </button>
+        <button type="submit" className="dashboard-auth-button" disabled={busy}>
+          {busy ? "Checking..." : "Continue"}
+          {!busy ? <IconArrowRight size={16} /> : null}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// Extracted for the same reason: lets the success-transition markup be
+// verified with renderToStaticMarkup instead of requiring a full
+// submit-code -> await success screen interaction.
+export function SuccessTransition({ signedInAs }: { signedInAs: string }) {
+  return (
+    <div className="dashboard-auth-success" role="status" data-testid="dashboard-auth-success">
+      <IconCheck size={32} />
+      <h2>You have been signed in successfully.</h2>
+      <p>Redirecting you now...</p>
+      {signedInAs ? <p className="dashboard-auth-success-email">Signed in as {signedInAs}</p> : null}
+    </div>
+  );
+}
+
 export function DashboardAuthClient() {
   const router = useRouter();
   const busyRef = useRef(false);
@@ -205,6 +320,17 @@ export function DashboardAuthClient() {
   const [provisioningUri, setProvisioningUri] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState("");
+  const [resendSecondsLeft, setResendSecondsLeft] = useState(0);
+  const [signedInAs, setSignedInAs] = useState("");
+
+  useEffect(() => {
+    if (resendSecondsLeft <= 0) return;
+    const timer = setInterval(() => {
+      setResendSecondsLeft((seconds) => nextResendSeconds(seconds));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendSecondsLeft]);
 
   function resetFlow() {
     busyRef.current = false;
@@ -219,6 +345,9 @@ export function DashboardAuthClient() {
     setTotpSecret("");
     setProvisioningUri("");
     setError("");
+    setSubmittedEmail("");
+    setResendSecondsLeft(0);
+    setSignedInAs("");
   }
 
   function beginSubmission(): boolean {
@@ -268,6 +397,12 @@ export function DashboardAuthClient() {
         return;
       }
 
+      // Set regardless of branch: a returning user whose account already has
+      // an authenticator skips the OTP step entirely (goes straight to
+      // "login"), but their email is still the one that will show on the
+      // success screen once they finish signing in.
+      setSubmittedEmail(trimmedEmail);
+
       if (requestData.nextStep === "totp") {
         setChallenge(requestData.challenge);
         setOtpId("");
@@ -285,6 +420,7 @@ export function DashboardAuthClient() {
       setChallenge("");
       setTotpSecret("");
       setProvisioningUri("");
+      setResendSecondsLeft(30);
       setStep("otp");
     } finally {
       endSubmission();
@@ -356,8 +492,9 @@ export function DashboardAuthClient() {
       }
 
       clearSensitiveState();
-      router.replace("/overview");
-      router.refresh();
+      setSignedInAs(submittedEmail);
+      setStep("success");
+      scheduleSuccessRedirect(router);
     } finally {
       endSubmission();
     }
@@ -386,8 +523,9 @@ export function DashboardAuthClient() {
       }
 
       clearSensitiveState();
-      router.replace("/overview");
-      router.refresh();
+      setSignedInAs(submittedEmail);
+      setStep("success");
+      scheduleSuccessRedirect(router);
     } finally {
       endSubmission();
     }
@@ -462,33 +600,16 @@ export function DashboardAuthClient() {
           ) : null}
 
           {step === "otp" ? (
-            <form className="dashboard-auth-form" onSubmit={handleVerifyOtp}>
-              <h2 className="dashboard-auth-step-heading">Verify the email code</h2>
-              <label className="dashboard-auth-field">
-                <span>6-digit OTP</span>
-                <input
-                  data-testid="dashboard-auth-otp"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={otp}
-                  onChange={(event) => setOtp(sanitizeNumeric(event.target.value, 6))}
-                  placeholder="123456"
-                  maxLength={6}
-                  required
-                />
-              </label>
-              <div className="dashboard-auth-actions">
-                <button type="button" className="dashboard-auth-button dashboard-auth-button--ghost" onClick={resetFlow} disabled={busy}>
-                  <IconRefresh size={16} />
-                  Use another email
-                </button>
-                <button type="submit" className="dashboard-auth-button" disabled={busy}>
-                  {busy ? "Checking..." : "Continue"}
-                  {!busy ? <IconArrowRight size={16} /> : null}
-                </button>
-              </div>
-            </form>
+            <OtpVerificationStep
+              submittedEmail={submittedEmail}
+              resendSecondsLeft={resendSecondsLeft}
+              otp={otp}
+              busy={busy}
+              onCodeChange={(event) => setOtp(sanitizeNumeric(event.target.value, 6))}
+              onSubmit={handleVerifyOtp}
+              onReset={resetFlow}
+              onResend={() => handleRequestOtp({ preventDefault: () => {} } as FormEvent<HTMLFormElement>)}
+            />
           ) : null}
 
           {step === "setup" ? (
@@ -532,6 +653,8 @@ export function DashboardAuthClient() {
               </div>
             </form>
           ) : null}
+
+          {step === "success" ? <SuccessTransition signedInAs={signedInAs} /> : null}
         </div>
       </div>
 
@@ -802,6 +925,33 @@ export function DashboardAuthClient() {
         .dashboard-auth-link-button:focus-visible {
           outline: none;
           box-shadow: 0 0 0 3px rgba(108, 99, 255, 0.24);
+        }
+        .dashboard-auth-link-button:disabled {
+          cursor: not-allowed;
+          opacity: 0.6;
+          text-decoration: none;
+        }
+        .dashboard-auth-masked-email {
+          text-align: center;
+          font-size: 0.92rem;
+          color: var(--color-text-secondary);
+          line-height: 1.5;
+        }
+        .dashboard-auth-masked-email strong {
+          color: var(--color-text-primary);
+          letter-spacing: 0.02em;
+        }
+        .dashboard-auth-success {
+          display: grid;
+          justify-items: center;
+          gap: 8px;
+          padding: 32px 8px;
+          text-align: center;
+          color: var(--color-text-primary);
+        }
+        .dashboard-auth-success-email {
+          color: var(--color-text-secondary);
+          font-size: 0.9rem;
         }
         .dashboard-auth-setup-key {
           display: grid;
