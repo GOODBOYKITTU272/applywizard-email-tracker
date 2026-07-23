@@ -666,27 +666,44 @@ Expected: PASS.
 
 - [ ] **Step 5: Add the success transition screen**
 
-Add a test:
+Add a test that drives the actual returning-user flow end to end and asserts on the redirect timing, not just that the component exists:
 
 ```typescript
 it("shows a brief success transition before redirecting after TOTP login", async () => {
+  const replace = vi.fn();
+  const refresh = vi.fn();
+  vi.doMock("next/navigation", () => ({
+    useRouter: () => ({ replace, refresh }),
+  }));
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, nextStep: "totp", challenge: "loginchallengev1_token" }),
+    })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
+  vi.stubGlobal("fetch", fetchMock);
   vi.useFakeTimers();
+
   const { DashboardAuthClient } = await import("./dashboard-auth-client");
-  // Render already in the "login" step by driving state via the email->otp->totp path
-  // is exercised in existing integration tests; here we assert the transition
-  // markup exists once handleLogin resolves ok, by invoking the component's
-  // internal success path through the existing verify-totp mock contract.
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) }),
-  );
+  const { default: userEvent } = await import("@testing-library/user-event");
+  const user = userEvent.setup({ delay: null });
 
   render(<DashboardAuthClient />);
-  // This test documents the requirement; full step-traversal coverage lives in
-  // the existing dashboard-auth-client integration suite once restyled steps
-  // are wired. Assert the success markup helper is present in the module.
-  const mod = await import("./dashboard-auth-client");
-  expect(typeof mod.DashboardAuthClient).toBe("function");
+  await user.type(screen.getByTestId("dashboard-auth-email"), "ramakrishna@applywizz.ai");
+  await user.click(screen.getByRole("button", { name: /send otp/i }));
+  await screen.findByTestId("dashboard-auth-login-code");
+
+  await user.type(screen.getByTestId("dashboard-auth-login-code"), "123456");
+  await user.click(screen.getByRole("button", { name: /sign in/i }));
+
+  await screen.findByTestId("dashboard-auth-success");
+  expect(replace).not.toHaveBeenCalled();
+
+  await vi.advanceTimersByTimeAsync(800);
+  expect(replace).toHaveBeenCalledWith("/");
+  expect(refresh).toHaveBeenCalled();
+
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
