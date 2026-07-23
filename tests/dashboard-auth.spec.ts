@@ -95,7 +95,9 @@ test.describe("Dashboard auth frontend", () => {
   test("requires a dashboard session underneath Basic Auth for /dashboard", async ({ page }) => {
     await page.goto("/dashboard");
 
-    await expect(page).toHaveURL(/\/dashboard\/login$/);
+    // requireDashboardSession() fails closed to "/?expired=1", not the old
+    // dedicated /dashboard/login screen.
+    await expect(page).toHaveURL(/\/\?expired=1$/);
     await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   });
 
@@ -120,9 +122,13 @@ test.describe("Dashboard auth frontend", () => {
     await context.close();
   });
 
-  test("renders the login screen at /dashboard/login when no session cookie exists", async ({ page }) => {
+  test("redirects /dashboard/login to the login screen at / when no session cookie exists", async ({ page }) => {
+    // /dashboard/login is now a thin redirect stub to "/" — it does not carry
+    // the "?expired=1" flag, since that only happens on a session-guard
+    // failure (requireDashboardSession()), not on this unconditional redirect.
     await page.goto("/dashboard/login");
 
+    await expect(page).toHaveURL(/\/$/);
     await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
     await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "email");
   });
@@ -136,9 +142,11 @@ test.describe("Dashboard auth frontend", () => {
       },
     ]);
 
-    await page.goto("/dashboard/login");
+    // "/" is the canonical login URL; it validates the cookie itself and only
+    // falls through to the login screen when the session does not resolve.
+    await page.goto("/");
 
-    await expect(page).toHaveURL(/\/dashboard\/login$/);
+    await expect(page).toHaveURL(/\/$/);
     await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
     await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "email");
   });
@@ -152,7 +160,7 @@ test.describe("Dashboard auth frontend", () => {
     await installAuthMocks(page, {}, records);
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("  staff@applywizz.ai  ");
     await page.getByRole("button", { name: "Send OTP" }).click();
 
@@ -218,7 +226,7 @@ test.describe("Dashboard auth frontend", () => {
   test("clears revealed setup state after Start over", async ({ page }) => {
     await installAuthMocks(page, {}, []);
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
     await page.getByTestId("dashboard-auth-otp").fill("123456");
@@ -255,7 +263,7 @@ test.describe("Dashboard auth frontend", () => {
       await route.fulfill(jsonResponse({ ok: true }));
     });
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
 
@@ -299,7 +307,7 @@ test.describe("Dashboard auth frontend", () => {
       records,
     );
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
     await page.getByTestId("dashboard-auth-otp").fill("123456");
@@ -325,7 +333,7 @@ test.describe("Dashboard auth frontend", () => {
     const records: RouteRecord[] = [];
     await installAuthMocks(page, { requestOtp: { ok: false } }, records);
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
 
@@ -338,7 +346,7 @@ test.describe("Dashboard auth frontend", () => {
     const records: RouteRecord[] = [];
     await installAuthMocks(page, { verifyOtp: { ok: false } }, records);
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
     await page.getByTestId("dashboard-auth-otp").fill("123456");
@@ -352,7 +360,7 @@ test.describe("Dashboard auth frontend", () => {
     const records: RouteRecord[] = [];
     await installAuthMocks(page, { completeTotpSetup: { ok: false } }, records);
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
     await page.getByTestId("dashboard-auth-otp").fill("123456");
@@ -379,7 +387,7 @@ test.describe("Dashboard auth frontend", () => {
       records,
     );
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
     await page.getByTestId("dashboard-auth-otp").fill("123456");
@@ -411,7 +419,7 @@ test.describe("Dashboard auth frontend", () => {
       await route.fulfill(jsonResponse({ ok: true }));
     });
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).dblclick();
 
@@ -422,7 +430,7 @@ test.describe("Dashboard auth frontend", () => {
   test("restart clears sensitive state and errors", async ({ page }) => {
     await installAuthMocks(page, {}, []);
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
     await page.getByTestId("dashboard-auth-otp").fill("123456");
@@ -442,7 +450,7 @@ test.describe("Dashboard auth frontend", () => {
     const records: RouteRecord[] = [];
     await installAuthMocks(page, {}, records);
 
-    await page.goto("/dashboard/login");
+    await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
     await page.getByTestId("dashboard-auth-otp").fill("123456");

@@ -238,7 +238,9 @@ async function confirmBasicAuthGate(params: {
   fetchImpl: typeof fetch;
   previewUrl: string;
 }): Promise<boolean> {
-  const unauthenticated = await params.fetchImpl(originUrl("/dashboard/login", params.previewUrl), { redirect: "manual" });
+  // "/" is the canonical login landing URL; /dashboard/login is now just a
+  // redirect stub to it, not a distinct page worth probing separately.
+  const unauthenticated = await params.fetchImpl(originUrl("/", params.previewUrl), { redirect: "manual" });
   return unauthenticated.status === 401;
 }
 
@@ -279,7 +281,9 @@ async function authenticatePreviewSession(params: {
   email: string;
   promptForOtp: (prompt: string) => Promise<string>;
 }): Promise<void> {
-  await params.page.goto(originUrl("/dashboard/login", params.previewUrl));
+  // "/" is the canonical login URL (dashboard/login is now just a redirect
+  // stub to it).
+  await params.page.goto(originUrl("/", params.previewUrl));
   await params.page.getByTestId("dashboard-auth-email").fill(params.email);
   await params.page.getByRole("button", { name: "Send OTP" }).click();
 
@@ -362,7 +366,10 @@ export async function runPreviewDashboardAuthE2EWithDeps(
     if (!revoked.ok) return { ok: false, code: "SESSION_REVOKE_FAILED" };
 
     await page.getByRole("link", { name: PREVIEW_E2E_SOFT_NAV_LINK }).click();
-    await page.waitForURL(originUrl("/dashboard/login", guard.config.previewUrl));
+    // The revoked session makes requireDashboardSession() fail closed to
+    // "/?expired=1" on the guarded "Clients" route, not the old dedicated
+    // /dashboard/login screen.
+    await page.waitForURL(originUrl("/?expired=1", guard.config.previewUrl));
 
     await authenticatePreviewSession({
       page,
@@ -378,7 +385,10 @@ export async function runPreviewDashboardAuthE2EWithDeps(
     if (!logoutOk) return { ok: false, code: "LOGOUT_FAILED" };
 
     await page.goto(originUrl("/overview", guard.config.previewUrl));
-    await page.waitForURL(originUrl("/dashboard/login", guard.config.previewUrl));
+    // Logged out, so requireDashboardSession() on the guarded "/overview" route
+    // fails closed to "/?expired=1", not the old dedicated /dashboard/login
+    // screen.
+    await page.waitForURL(originUrl("/?expired=1", guard.config.previewUrl));
 
     const cleanup = await disableAdmin({ env, supabase });
     cleanupOk = cleanup.ok;
