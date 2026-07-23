@@ -3,14 +3,19 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 describe("dashboard roles", () => {
-  it("allows only admin_ceo to access broad dashboards in Phase 1", async () => {
-    const { canAccessBroadDashboards, isAdminCeo } = await import("./roles");
+  it("allows only admin_ceo to be isAdminCeo", async () => {
+    const { isAdminCeo } = await import("./roles");
 
     expect(isAdminCeo("admin_ceo")).toBe(true);
     expect(isAdminCeo("manager_ops")).toBe(false);
     expect(isAdminCeo("ca")).toBe(false);
+  });
+
+  it("allows admin_ceo and manager_ops, denies ca", async () => {
+    const { canAccessBroadDashboards } = await import("./roles");
+
     expect(canAccessBroadDashboards("admin_ceo")).toBe(true);
-    expect(canAccessBroadDashboards("manager_ops")).toBe(false);
+    expect(canAccessBroadDashboards("manager_ops")).toBe(true);
     expect(canAccessBroadDashboards("ca")).toBe(false);
   });
 });

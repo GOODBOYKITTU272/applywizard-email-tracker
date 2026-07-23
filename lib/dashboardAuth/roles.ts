@@ -7,7 +7,7 @@ export function isAdminCeo(role: DashboardRole): boolean {
 }
 
 export function canAccessBroadDashboards(role: DashboardRole): boolean {
-  return isAdminCeo(role);
+  return role === "admin_ceo" || role === "manager_ops";
 }
 
 const STAFF_DOMAIN = "applywizz.ai";
