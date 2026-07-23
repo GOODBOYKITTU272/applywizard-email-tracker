@@ -1,13 +1,13 @@
 import { IconClients, IconMail, IconRefresh, IconWarning } from "@/components/icons";
 import { CooBadge, EmptyState, MetricCard, SectionBlock } from "@/components/coo";
-import { requireDashboardSession } from "@/lib/dashboardAuth/requireDashboardSession";
+import { requireOperationsAccess } from "@/lib/dashboardAuth/requireOperationsAccess";
 import { getEmailArrivalMonitorData, getRecentEmailActivity, formatIstTime } from "@/lib/zoho/emailArrival";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function EmailArrivalMonitorPage() {
-  await requireDashboardSession();
+  await requireOperationsAccess();
 
   // NOTE: this page intentionally has TWO separate data sources (temporary — do not
   // unify in Step 3):

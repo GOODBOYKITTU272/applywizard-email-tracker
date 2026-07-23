@@ -1,11 +1,11 @@
-import { requireDashboardSession } from "@/lib/dashboardAuth/requireDashboardSession";
+import { requireOperationsAccess } from "@/lib/dashboardAuth/requireOperationsAccess";
 import MailboxConnectionsClient from "./mailboxes-client";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function MailboxConnectionsPage() {
-  await requireDashboardSession();
+  await requireOperationsAccess();
 
   return <MailboxConnectionsClient />;
 }

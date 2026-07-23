@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { CooBadge, EmptyState, MetricCard, SectionBlock } from "@/components/coo";
-import { requireDashboardSession } from "@/lib/dashboardAuth/requireDashboardSession";
+import { requireOperationsAccess } from "@/lib/dashboardAuth/requireOperationsAccess";
 import { getReviewQueueWorkspaceData } from "@/lib/zoho/cooWorkspace";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +26,7 @@ function formatDeadline(value: string | null): string | null {
 }
 
 export default async function ReviewQueuePage() {
-  await requireDashboardSession();
+  await requireOperationsAccess();
 
   const data = await getReviewQueueWorkspaceData();
 

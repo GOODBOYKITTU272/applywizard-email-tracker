@@ -1,11 +1,11 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { requireDashboardSession } from "@/lib/dashboardAuth/requireDashboardSession";
+import { requireOperationsAccess } from "@/lib/dashboardAuth/requireOperationsAccess";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export default async function DashboardPage() {
-  await requireDashboardSession();
+  await requireOperationsAccess();
 
   const expectedSecret = process.env.DASHBOARD_SECRET;
 

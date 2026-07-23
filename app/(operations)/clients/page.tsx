@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { CooBadge, EmptyState, MetricCard, SectionBlock } from "@/components/coo";
-import { requireDashboardSession } from "@/lib/dashboardAuth/requireDashboardSession";
+import { requireOperationsAccess } from "@/lib/dashboardAuth/requireOperationsAccess";
 import { getClientsWorkspaceData } from "@/lib/zoho/cooWorkspace";
 
 export const dynamic = "force-dynamic";
@@ -85,7 +85,7 @@ function toneForQueue(value: string): "success" | "warning" | "critical" | "neut
 }
 
 export default async function ClientsPage({ searchParams }: { searchParams: SearchParams }) {
-  await requireDashboardSession();
+  await requireOperationsAccess();
 
   const params = await searchParams;
   const current = new URLSearchParams();
