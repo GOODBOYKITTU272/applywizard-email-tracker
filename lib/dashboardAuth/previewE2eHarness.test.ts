@@ -62,7 +62,6 @@ function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     DASHBOARD_PRODUCTION_SUPABASE_PROJECT_REF: "zyxwvutsrqponmlkjihg",
     NEXT_PUBLIC_SUPABASE_URL: "https://abcdefghijklmnopqrst.supabase.co",
     SUPABASE_SERVICE_ROLE_KEY: "service-role-secret",
-    DASHBOARD_SECRET: "basic-auth-secret",
     ...overrides,
   };
 }
@@ -146,7 +145,6 @@ function makeHarnessDeps(
   });
   const createSupabase = vi.fn(() => ({}) as never);
   const promptForOtp = vi.fn(async () => "123456");
-  const fetchMock = vi.fn(async () => ({ status: 401 }) as Response);
   const revokeSessionsForEmail = vi.fn(async () => {
     events.push("revoke");
     return { ok: options.revokeOk ?? true };
@@ -162,7 +160,6 @@ function makeHarnessDeps(
     createSupabase,
     disableAdmin,
     events,
-    fetchMock,
     launchBrowser,
     page,
     promptForOtp,
@@ -174,7 +171,6 @@ function harnessDepsFor(deps: ReturnType<typeof makeHarnessDeps>) {
   return {
     createSupabase: deps.createSupabase,
     disableAdmin: deps.disableAdmin,
-    fetch: deps.fetchMock,
     launchBrowser: deps.launchBrowser,
     promptForOtp: deps.promptForOtp,
     revokeSessionsForEmail: deps.revokeSessionsForEmail,
@@ -269,10 +265,6 @@ describe("preview E2E harness guards", () => {
       ok: false,
       code: "MISSING_EMAIL",
     });
-    expect(validatePreviewE2eEnvironment(env({ DASHBOARD_SECRET: "" }))).toEqual({
-      ok: false,
-      code: "MISSING_BASIC_AUTH_SECRET",
-    });
     expect(validatePreviewE2eEnvironment(env({ SUPABASE_SERVICE_ROLE_KEY: "" }))).toEqual({
       ok: false,
       code: "MISSING_SERVICE_ROLE_KEY",
@@ -287,7 +279,6 @@ describe("preview E2E harness guards", () => {
         normalizedEmail: "dashboard-auth-test@applywizz.ai",
         projectRef: "abcdefghijklmnopqrst",
         productionProjectRef: "zyxwvutsrqponmlkjihg",
-        basicAuthSecret: "basic-auth-secret",
       },
     });
   });
@@ -301,18 +292,6 @@ describe("preview E2E harness guards", () => {
     expect(launchBrowser).not.toHaveBeenCalled();
   });
 
-  it("checks Basic Auth before browser launch", async () => {
-    const deps = makeHarnessDeps();
-    deps.fetchMock.mockResolvedValueOnce({ status: 200 } as Response);
-
-    await expect(
-      runPreviewDashboardAuthE2EWithDeps(env(), {
-        fetch: deps.fetchMock,
-        launchBrowser: deps.launchBrowser,
-      }),
-    ).resolves.toEqual({ ok: false, code: "BASIC_AUTH_GATE_NOT_CONFIRMED" });
-    expect(deps.launchBrowser).not.toHaveBeenCalled();
-  });
 });
 
 describe("preview E2E harness flow", () => {
@@ -323,7 +302,6 @@ describe("preview E2E harness flow", () => {
       runPreviewDashboardAuthE2EWithDeps(env(), {
         createSupabase: deps.createSupabase,
         disableAdmin: deps.disableAdmin,
-        fetch: deps.fetchMock,
         launchBrowser: deps.launchBrowser,
         promptForOtp: deps.promptForOtp,
         revokeSessionsForEmail: deps.revokeSessionsForEmail,
@@ -344,7 +322,6 @@ describe("preview E2E harness flow", () => {
       runPreviewDashboardAuthE2EWithDeps(env(), {
         createSupabase: deps.createSupabase,
         disableAdmin: deps.disableAdmin,
-        fetch: deps.fetchMock,
         launchBrowser: deps.launchBrowser,
         promptForOtp: deps.promptForOtp,
         revokeSessionsForEmail: deps.revokeSessionsForEmail,
@@ -360,7 +337,6 @@ describe("preview E2E harness flow", () => {
       runPreviewDashboardAuthE2EWithDeps(env(), {
         createSupabase: deps.createSupabase,
         disableAdmin: deps.disableAdmin,
-        fetch: deps.fetchMock,
         launchBrowser: deps.launchBrowser,
         promptForOtp: deps.promptForOtp,
         revokeSessionsForEmail: deps.revokeSessionsForEmail,

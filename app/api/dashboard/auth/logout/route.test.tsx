@@ -15,19 +15,15 @@ function makeRequest(headers: Record<string, string> = {}): NextRequest {
   });
 }
 
-const previousSecret = process.env.DASHBOARD_SECRET;
 const previousNodeEnv = process.env.NODE_ENV;
 
 beforeEach(() => {
-  process.env.DASHBOARD_SECRET = "test-dashboard-secret";
   process.env.NODE_ENV = "test";
   revokeDashboardSession.mockReset();
   revokeDashboardSession.mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
-  if (previousSecret === undefined) delete process.env.DASHBOARD_SECRET;
-  else process.env.DASHBOARD_SECRET = previousSecret;
   if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = previousNodeEnv;
   vi.restoreAllMocks();

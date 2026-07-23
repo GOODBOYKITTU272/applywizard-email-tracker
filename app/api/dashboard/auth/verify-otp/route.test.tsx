@@ -19,16 +19,11 @@ function makeRequest(body: string, headers: Record<string, string> = {}): NextRe
   });
 }
 
-const previousSecret = process.env.DASHBOARD_SECRET;
-
 beforeEach(() => {
-  process.env.DASHBOARD_SECRET = "test-dashboard-secret";
   verifyDashboardLoginOtp.mockReset();
 });
 
 afterEach(() => {
-  if (previousSecret === undefined) delete process.env.DASHBOARD_SECRET;
-  else process.env.DASHBOARD_SECRET = previousSecret;
   vi.restoreAllMocks();
 });
 

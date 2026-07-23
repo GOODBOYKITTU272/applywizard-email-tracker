@@ -1,6 +1,4 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import fs from "node:fs";
-import path from "node:path";
+import { expect, test, type Page } from "@playwright/test";
 
 type RouteRecord = {
   path: string;
@@ -15,39 +13,6 @@ function jsonResponse(body: unknown, status = 200) {
   };
 }
 
-function basicAuth(username: string, password: string): string {
-  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
-}
-
-function loadDashboardSecret(): string {
-  const fromEnv = process.env.DASHBOARD_SECRET?.trim();
-  if (fromEnv) return fromEnv;
-
-  for (const candidate of [".env.local", ".env.production.local", ".env"]) {
-    const filePath = path.join(process.cwd(), candidate);
-    if (!fs.existsSync(filePath)) continue;
-
-    const match = fs
-      .readFileSync(filePath, "utf8")
-      .match(/^DASHBOARD_SECRET=(.*)$/m);
-    if (!match) continue;
-
-    const raw = match[1]?.trim() ?? "";
-    return raw.replace(/^["']|["']$/g, "");
-  }
-
-  return "test-dashboard-secret";
-}
-
-const DASHBOARD_SECRET = loadDashboardSecret();
-
-test.use({
-  httpCredentials: {
-    username: "admin",
-    password: DASHBOARD_SECRET,
-  },
-});
-
 async function installAuthMocks(
   page: Page,
   responses: {
@@ -60,7 +25,7 @@ async function installAuthMocks(
 ) {
   await page.route("**/api/dashboard/auth/request-otp", async (route) => {
     records.push({ path: "request-otp", body: route.request().postDataJSON() as Record<string, unknown> });
-    await route.fulfill(jsonResponse(responses.requestOtp ?? { ok: true, otpId: "otp-1" }));
+    await route.fulfill(jsonResponse(responses.requestOtp ?? { ok: true, nextStep: "email_otp", challengeId: "otp-1" }));
   });
 
   await page.route("**/api/dashboard/auth/verify-otp", async (route) => {
@@ -92,7 +57,7 @@ async function installAuthMocks(
 }
 
 test.describe("Dashboard auth frontend", () => {
-  test("requires a dashboard session underneath Basic Auth for /dashboard", async ({ page }) => {
+  test("requires a dashboard session for /dashboard", async ({ page }) => {
     await page.goto("/dashboard");
 
     // requireDashboardSession() fails closed to "/?expired=1", not the old
@@ -101,25 +66,19 @@ test.describe("Dashboard auth frontend", () => {
     await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   });
 
-  test("does not let a dashboard session cookie bypass Phase A Basic Auth", async ({ browser }: { browser: Browser }) => {
-    const context = await browser.newContext({
-      extraHTTPHeaders: {
-        authorization: basicAuth("admin", "wrong-dashboard-secret"),
-      },
-    });
-    await context.addCookies([
+  test("does not let a fake dashboard session cookie bypass application auth", async ({ page }) => {
+    await page.context().addCookies([
       {
         name: "dashboard_session",
         value: "fake-session-token",
         url: "http://localhost:3000",
       },
     ]);
-    const page = await context.newPage();
 
-    const response = await page.goto("/overview");
+    await page.goto("/overview");
 
-    expect(response?.status()).toBe(401);
-    await context.close();
+    await expect(page).toHaveURL(/\/\?expired=1$/);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   });
 
   test("redirects /dashboard/login to the login screen at / when no session cookie exists", async ({ page }) => {
@@ -250,11 +209,11 @@ test.describe("Dashboard auth frontend", () => {
     await expect(page.getByTestId("dashboard-auth-show-setup-key")).toBeVisible();
   });
 
-  test("returning user: email OTP then authenticator code, no QR setup, then logout", async ({ page }) => {
+  test("returning user: authenticator code without email OTP, no QR setup, then logout", async ({ page }) => {
     const records: RouteRecord[] = [];
     await installAuthMocks(
       page,
-      { verifyOtp: { ok: true, stage: "totp_required", challenge: "challenge-login" } },
+      { requestOtp: { ok: true, nextStep: "totp", challenge: "challenge-login" } },
       records,
     );
     let logoutCalled = false;
@@ -267,12 +226,6 @@ test.describe("Dashboard auth frontend", () => {
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
 
-    // A fresh email OTP is still required for the returning user.
-    await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "otp");
-    await page.getByTestId("dashboard-auth-otp").fill("123456");
-    await page.getByRole("button", { name: "Continue" }).click();
-
-    // The authenticator login screen appears — not the QR/setup screen.
     await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "login");
     await expect(page.getByRole("heading", { name: "Enter your authenticator code" })).toBeVisible();
     await expect(page.getByTestId("dashboard-auth-login-code")).toBeVisible();
@@ -289,8 +242,7 @@ test.describe("Dashboard auth frontend", () => {
     expect(logoutOk).toBe(true);
     expect(logoutCalled).toBe(true);
 
-    // Email OTP was requested and verified; TOTP verified; no setup/registration occurred.
-    expect(records.map((record) => record.path)).toEqual(["request-otp", "verify-otp", "verify-totp"]);
+    expect(records.map((record) => record.path)).toEqual(["request-otp", "verify-totp"]);
   });
 
   test("completes the returning-user login flow", async ({ page }) => {
@@ -303,6 +255,7 @@ test.describe("Dashboard auth frontend", () => {
           stage: "totp_required",
           challenge: "challenge-2",
         },
+        requestOtp: { ok: true, nextStep: "totp", challenge: "challenge-2" },
       },
       records,
     );
@@ -310,8 +263,6 @@ test.describe("Dashboard auth frontend", () => {
     await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
-    await page.getByTestId("dashboard-auth-otp").fill("123456");
-    await page.getByRole("button", { name: "Continue" }).click();
 
     await expect(page.getByTestId("dashboard-auth-shell")).toHaveAttribute("data-step", "login");
     await expect(page.getByRole("heading", { name: "Enter your authenticator code" })).toBeVisible();
@@ -324,7 +275,6 @@ test.describe("Dashboard auth frontend", () => {
 
     expect(records).toEqual([
       { path: "request-otp", body: { email: "staff@applywizz.ai" } },
-      { path: "verify-otp", body: { otpId: "otp-1", rawOtp: "123456" } },
       { path: "verify-totp", body: { challenge: "challenge-2", code: "654321" } },
     ]);
   });
@@ -377,6 +327,7 @@ test.describe("Dashboard auth frontend", () => {
     await installAuthMocks(
       page,
       {
+        requestOtp: { ok: true, nextStep: "totp", challenge: "challenge-2" },
         verifyOtp: {
           ok: true,
           stage: "totp_required",
@@ -390,8 +341,6 @@ test.describe("Dashboard auth frontend", () => {
     await page.goto("/");
     await page.getByTestId("dashboard-auth-email").fill("staff@applywizz.ai");
     await page.getByRole("button", { name: "Send OTP" }).click();
-    await page.getByTestId("dashboard-auth-otp").fill("123456");
-    await page.getByRole("button", { name: "Continue" }).click();
     await page.getByTestId("dashboard-auth-login-code").fill("654321");
     await page.getByRole("button", { name: "Sign in" }).click();
 

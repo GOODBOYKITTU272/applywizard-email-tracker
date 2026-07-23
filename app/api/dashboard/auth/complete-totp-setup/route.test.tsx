@@ -19,19 +19,15 @@ function makeRequest(body: string, headers: Record<string, string> = {}): NextRe
   });
 }
 
-const previousSecret = process.env.DASHBOARD_SECRET;
 const previousNodeEnv = process.env.NODE_ENV;
 
 beforeEach(() => {
-  process.env.DASHBOARD_SECRET = "test-dashboard-secret";
   process.env.NODE_ENV = "test";
   completeDashboardTotpSetup.mockReset();
   completeDashboardTotpSetup.mockResolvedValue({ ok: true, sessionToken: "session-token-123" });
 });
 
 afterEach(() => {
-  if (previousSecret === undefined) delete process.env.DASHBOARD_SECRET;
-  else process.env.DASHBOARD_SECRET = previousSecret;
   if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = previousNodeEnv;
   vi.restoreAllMocks();

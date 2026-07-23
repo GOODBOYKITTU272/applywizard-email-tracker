@@ -26,8 +26,7 @@ export type PreviewE2eGuardCode =
   | "MALFORMED_SUPABASE_URL"
   | "PROJECT_REF_MISMATCH"
   | "PRODUCTION_PROJECT_REF"
-  | "MISSING_SERVICE_ROLE_KEY"
-  | "MISSING_BASIC_AUTH_SECRET";
+  | "MISSING_SERVICE_ROLE_KEY";
 
 export type PreviewE2eGuardResult =
   | {
@@ -37,13 +36,12 @@ export type PreviewE2eGuardResult =
         normalizedEmail: string;
         projectRef: string;
         productionProjectRef: string;
-        basicAuthSecret: string;
       };
     }
   | { ok: false; code: PreviewE2eGuardCode };
 
 type PreviewBrowser = {
-  newContext(options: { httpCredentials: { username: string; password: string } }): Promise<PreviewBrowserContext>;
+  newContext(): Promise<PreviewBrowserContext>;
   close(): Promise<void>;
 };
 
@@ -75,7 +73,6 @@ export interface PreviewE2eHarnessDeps {
   launchBrowser?: () => Promise<PreviewBrowser>;
   createSupabase?: () => PreviewAdminSupabase;
   promptForOtp?: (prompt: string) => Promise<string>;
-  fetch?: typeof fetch;
   revokeSessionsForEmail?: (params: { env: NodeJS.ProcessEnv; supabase: PreviewAdminSupabase }) => Promise<{ ok: boolean }>;
   disableAdmin?: (params: { env: NodeJS.ProcessEnv; supabase: PreviewAdminSupabase }) => Promise<{ ok: boolean }>;
   otpInputTimeoutMs?: number;
@@ -148,9 +145,6 @@ export function validatePreviewE2eEnvironment(env: NodeJS.ProcessEnv): PreviewE2
 
   if (!env.SUPABASE_SERVICE_ROLE_KEY?.trim()) return { ok: false, code: "MISSING_SERVICE_ROLE_KEY" };
 
-  const basicAuthSecret = env.DASHBOARD_SECRET?.trim() ?? "";
-  if (!basicAuthSecret) return { ok: false, code: "MISSING_BASIC_AUTH_SECRET" };
-
   return {
     ok: true,
     config: {
@@ -158,7 +152,6 @@ export function validatePreviewE2eEnvironment(env: NodeJS.ProcessEnv): PreviewE2
       normalizedEmail,
       projectRef,
       productionProjectRef,
-      basicAuthSecret,
     },
   };
 }
@@ -232,16 +225,6 @@ async function defaultLaunchBrowser(): Promise<PreviewBrowser> {
 async function defaultCreateSupabase(): Promise<PreviewAdminSupabase> {
   const { createSupabaseServiceRoleClient } = await import("@/lib/supabase/serviceRole");
   return createSupabaseServiceRoleClient() as unknown as PreviewAdminSupabase;
-}
-
-async function confirmBasicAuthGate(params: {
-  fetchImpl: typeof fetch;
-  previewUrl: string;
-}): Promise<boolean> {
-  // "/" is the canonical login landing URL; /dashboard/login is now just a
-  // redirect stub to it, not a distinct page worth probing separately.
-  const unauthenticated = await params.fetchImpl(originUrl("/", params.previewUrl), { redirect: "manual" });
-  return unauthenticated.status === 401;
 }
 
 export const PREVIEW_E2E_SETUP_CONTROL_TEST_ID = "dashboard-auth-show-setup-key";
@@ -318,10 +301,6 @@ export async function runPreviewDashboardAuthE2EWithDeps(
   const guard = validatePreviewE2eEnvironment(env);
   if (!guard.ok) return guard;
 
-  const fetchImpl = deps.fetch ?? fetch;
-  const basicAuthConfirmed = await confirmBasicAuthGate({ fetchImpl, previewUrl: guard.config.previewUrl });
-  if (!basicAuthConfirmed) return { ok: false, code: "BASIC_AUTH_GATE_NOT_CONFIRMED" };
-
   // Cleanup dependencies are established before any browser resource exists so
   // mandatory cleanup can still run if browser launch or setup itself throws.
   const supabase = deps.createSupabase ? deps.createSupabase() : await defaultCreateSupabase();
@@ -341,12 +320,7 @@ export async function runPreviewDashboardAuthE2EWithDeps(
 
   try {
     browser = await (deps.launchBrowser ?? defaultLaunchBrowser)();
-    context = await browser.newContext({
-      httpCredentials: {
-        username: "admin",
-        password: guard.config.basicAuthSecret,
-      },
-    });
+    context = await browser.newContext();
     context.setDefaultTimeout(PREVIEW_E2E_ACTION_TIMEOUT_MS);
     context.setDefaultNavigationTimeout(PREVIEW_E2E_NAVIGATION_TIMEOUT_MS);
     const page = await context.newPage();
