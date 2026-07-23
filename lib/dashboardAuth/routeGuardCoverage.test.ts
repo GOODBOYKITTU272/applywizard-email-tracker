@@ -10,6 +10,7 @@ function read(relativePath: string): string {
 
 const guardedPages = [
   ["dashboard", "app/dashboard/page.tsx"],
+  ["access pending", "app/access-pending/page.tsx"],
   ["overview", "app/(operations)/overview/page.tsx"],
   ["live monitor", "app/(operations)/live-monitor/email-arrival/page.tsx"],
   ["clients", "app/(operations)/clients/page.tsx"],
