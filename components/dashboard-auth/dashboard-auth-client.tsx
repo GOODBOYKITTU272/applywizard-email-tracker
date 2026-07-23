@@ -301,7 +301,7 @@ export function SuccessTransition({ signedInAs }: { signedInAs: string }) {
       <IconCheck size={32} />
       <h2>You have been signed in successfully.</h2>
       <p>Redirecting you now...</p>
-      {signedInAs ? <p className="dashboard-auth-success-email">Signed in as {signedInAs}</p> : null}
+      {signedInAs ? <p className="dashboard-auth-success-email">Signed in as {maskEmail(signedInAs)}</p> : null}
     </div>
   );
 }

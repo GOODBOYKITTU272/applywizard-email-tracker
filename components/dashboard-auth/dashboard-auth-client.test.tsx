@@ -126,13 +126,15 @@ describe("OtpVerificationStep", () => {
 });
 
 describe("SuccessTransition", () => {
-  it("renders the success message with the signed-in email", async () => {
+  it("renders the success message with the masked signed-in email", async () => {
     const { SuccessTransition } = await import("./dashboard-auth-client");
     const markup = renderToStaticMarkup(<SuccessTransition signedInAs="ramakrishna@applywizz.ai" />);
 
     expect(markup).toContain('data-testid="dashboard-auth-success"');
     expect(markup).toContain("signed in successfully");
-    expect(markup).toContain("ramakrishna@applywizz.ai");
+    // Consistent with the OTP step's masking: the raw email is never shown.
+    expect(markup).toContain("r*********a@applywizz.ai");
+    expect(markup).not.toContain("ramakrishna@applywizz.ai");
   });
 });
 
