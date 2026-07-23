@@ -234,9 +234,49 @@ git commit -m "fix: add server-side role guard for broad operations access"
 
 - [ ] **Step 1: Write the failing test**
 
-Replace `lib/dashboardAuth/routeGuardCoverage.test.ts`'s `guardedPages` check with one that asserts role gating specifically for the broad-operations subset (everything except `dashboard` itself, which gets the same guard, and `access pending`, which intentionally does not):
+This task converts every entry in the existing `guardedPages` array (except `dashboard`'s own special case, which is also converting, and `access pending`, which is not) and every entry in `clientWrapperPages` (all four: `applications`, `application detail`, `mailboxes`, `ca portfolio`) from the bare `requireDashboardSession()` call to `requireOperationsAccess()`. The file's three existing tests that assert the literal string `requireDashboardSession()` is present — the `guardedPages` `it.each` (lines 36-41), the `clientWrapperPages` `it.each` (lines 43-49), and the single "also guards at the operations layout" test (lines 51-60) — would all break simultaneously if left as exact-string checks, since their whole point ("this page has *a* session guard") is still true after the swap, just via a different function name. Update all three to accept either guard function, and add a new block asserting the *stronger* role-guard requirement for the broad-operations subset specifically.
+
+Replace the whole file's `describe` block with:
 
 ```typescript
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+const repoRoot = process.cwd();
+
+function read(relativePath: string): string {
+  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+}
+
+function hasASessionGuard(source: string): boolean {
+  return source.includes("requireDashboardSession()") || source.includes("requireOperationsAccess()");
+}
+
+const guardedPages = [
+  ["dashboard", "app/dashboard/page.tsx"],
+  ["access pending", "app/access-pending/page.tsx"],
+  ["overview", "app/(operations)/overview/page.tsx"],
+  ["live monitor", "app/(operations)/live-monitor/email-arrival/page.tsx"],
+  ["clients", "app/(operations)/clients/page.tsx"],
+  ["client detail", "app/(operations)/clients/[clientKey]/page.tsx"],
+  ["operations", "app/(operations)/operations/page.tsx"],
+  ["interviews", "app/(operations)/operations/interviews/page.tsx"],
+  ["interview detail", "app/(operations)/operations/interviews/[id]/page.tsx"],
+  ["review queue", "app/(operations)/review-queue/page.tsx"],
+  ["applications", "app/(operations)/applications/page.tsx"],
+  ["application detail", "app/(operations)/applications/[applicationId]/page.tsx"],
+  ["mailboxes", "app/(operations)/mailboxes/page.tsx"],
+  ["ca portfolio", "app/(operations)/ca-portfolio/page.tsx"],
+] as const;
+
+const clientWrapperPages = [
+  "app/(operations)/applications/page.tsx",
+  "app/(operations)/applications/[applicationId]/page.tsx",
+  "app/(operations)/mailboxes/page.tsx",
+  "app/(operations)/ca-portfolio/page.tsx",
+] as const;
+
 const broadOperationsPages = [
   ["overview", "app/(operations)/overview/page.tsx"],
   ["live monitor", "app/(operations)/live-monitor/email-arrival/page.tsx"],
@@ -252,6 +292,38 @@ const broadOperationsPages = [
   ["ca portfolio", "app/(operations)/ca-portfolio/page.tsx"],
   ["dashboard", "app/dashboard/page.tsx"],
 ] as const;
+
+describe("dashboard session route guard coverage", () => {
+  it.each(guardedPages)("%s page calls a dashboard session guard", (_label, filePath) => {
+    const source = read(filePath);
+    expect(hasASessionGuard(source)).toBe(true);
+  });
+
+  it.each(clientWrapperPages)("%s is a server wrapper, not an unguarded client page", (filePath) => {
+    const source = read(filePath).trimStart();
+
+    expect(source.startsWith('"use client"')).toBe(false);
+    expect(source.startsWith("'use client'")).toBe(false);
+    expect(hasASessionGuard(source)).toBe(true);
+  });
+
+  it("also guards at the operations layout, in addition to each page's own check", () => {
+    // The layout calls a session guard too (defense-in-depth, and the source
+    // of the real signed-in identity for the sidebar), but this is additive:
+    // every page above still carries its own guard, so no route depends on
+    // the layout as its *sole* protection.
+    const source = read("app/(operations)/layout.tsx");
+    expect(hasASessionGuard(source)).toBe(true);
+  });
+
+  it("adds a hard-navigation logout action to the operations shell", () => {
+    const source = read("components/operations/operations-shell-client.tsx");
+
+    expect(source).toContain("/api/dashboard/auth/logout");
+    expect(source).toContain("window.location.assign");
+    expect(source).toContain("/dashboard/login");
+  });
+});
 
 describe("broad operations pages require role-gated access, not just a session", () => {
   it.each(broadOperationsPages)("%s page calls requireOperationsAccess, not the bare session guard", (_label, filePath) => {
@@ -276,7 +348,7 @@ describe("broad operations pages require role-gated access, not just a session",
 });
 ```
 
-Keep the existing `guardedPages`/`clientWrapperPages` describe blocks in the same file as-is — they still correctly assert every page has *a* session guard; this new block additionally requires the *role* guard for the broad-operations subset.
+Note: the file's pre-existing "keeps middleware free of server-only session validation imports" test (which reads `middleware.ts`) is intentionally dropped here, not merely edited — Task 6 deletes `middleware.ts` entirely, and a test reading a file Task 6 removes cannot survive regardless of assertion content. Do not attempt to preserve or repoint it; Task 6 owns removing this test as part of that deletion, and this task should not remove it early since Task 6 hasn't run yet — leave it in place for now and let Task 6 handle it (its Step 1 already includes deleting `middleware.test.ts`, but if this specific `it()` inside `routeGuardCoverage.test.ts` still reads a deleted `middleware.ts`, Task 6 must also remove this one test case as part of its own commit). If you are the Task 2 implementer and this is confusing, leave that one test (`"keeps middleware free..."`) untouched in this task — it still passes today since `middleware.ts` still exists at this point in the plan's sequence.
 
 - [ ] **Step 2: Run the failing test**
 
@@ -813,8 +885,9 @@ git commit -m "chore: remove stale dashboard secret flow"
 - Delete: `middleware.ts`
 - Delete: `middleware.test.ts`
 - Modify: `vitest.config.ts`
+- Modify: `lib/dashboardAuth/routeGuardCoverage.test.ts`
 
-**Interfaces:** None — pure deletion.
+**Interfaces:** None — pure deletion, plus removing one now-orphaned test case.
 
 - [ ] **Step 1: Confirm it is genuinely a no-op before deleting**
 
@@ -829,6 +902,8 @@ Confirm the function body is exactly `return NextResponse.next();` with no condi
 ```bash
 git rm middleware.ts middleware.test.ts
 ```
+
+`lib/dashboardAuth/routeGuardCoverage.test.ts` has one remaining test, `"keeps middleware free of server-only session validation imports"`, that reads `middleware.ts` via `read("middleware.ts")` (Task 2 deliberately left this one test case untouched since the file still existed at that point in the plan). Now that the file is deleted, this test would fail with an ENOENT-style read error, not a real assertion failure — remove this one `it(...)` block from the file (do not remove any other test in that file, and do not remove the whole file, only this one now-meaningless test case that references a file that no longer exists).
 
 - [ ] **Step 3: Remove the now-unneeded vitest include entry**
 
@@ -848,7 +923,7 @@ Expected: PASS, and the lint warning about `middleware.ts`'s unused `_request` p
 - [ ] **Step 5: Commit**
 
 ```bash
-git add vitest.config.ts
+git add vitest.config.ts lib/dashboardAuth/routeGuardCoverage.test.ts
 git commit -m "chore: remove no-op middleware"
 ```
 
